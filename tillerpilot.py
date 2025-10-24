@@ -1,6 +1,8 @@
 from pymavlink import mavutil
 import time, math
 
+# TODO: Set gps filtering to something like boat or pedestriean
+
 class Tillerpilot:
 
     m = None
@@ -11,19 +13,17 @@ class Tillerpilot:
         print("Heatbeat received")
 
     def send_heading(self, hdg_deg):
+        # MAV_CMD_CONDITION_YAW is not supported by rover
         yaw = math.radians(hdg_deg)
+        # this is stupid?
+        #self.m.set_mode_apm()
+
         self.m.mav.set_position_target_local_ned_send(
             int(time.time()),
             self.m.target_system, self.m.target_component,
             mavutil.mavlink.MAV_FRAME_LOCAL_NED,
             # ignore xyz, accel, yaw_rate; use vx and yaw
-            mavutil.mavlink.POSITION_TARGET_TYPEMASK_X_IGNORE |
-            mavutil.mavlink.POSITION_TARGET_TYPEMASK_Y_IGNORE |
-            mavutil.mavlink.POSITION_TARGET_TYPEMASK_Z_IGNORE |
-            mavutil.mavlink.POSITION_TARGET_TYPEMASK_AX_IGNORE |
-            mavutil.mavlink.POSITION_TARGET_TYPEMASK_AY_IGNORE |
-            mavutil.mavlink.POSITION_TARGET_TYPEMASK_AZ_IGNORE |
-            mavutil.mavlink.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE,
+            0b100111111111,
             0,0,0,                    # x,y,z (ignored)
             0,0,0,                # vx,vy,vz (vy unused)
             0,0,0,                    # ax,ay,az (ignored)
@@ -35,11 +35,13 @@ class Tillerpilot:
 
     def init(self):
         self.connect()
-        # Get GLOBAL_POSITION_INT message at 2Hz
         self.request_message_interval(33, 1000000)
 
     def arm(self):
         # ARM as in RC speak
+        # self.m.arducopter_arm()
+        # self.m.motors_armed_wait()
+
         self.m.mav.command_long_send(
             self.m.target_system,
             self.m.target_component,
@@ -81,7 +83,7 @@ class Tillerpilot:
             0,  # confirmation
             mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,  # param1: mode flag
             mode,  # param2: custom mode (15 = GUIDED for Sailboat)
-            0,  # param3
+            3,  # param3
             0,  # param4
             0,  # param5
             0,  # param6
@@ -142,6 +144,7 @@ class Tillerpilot:
         Get the current GPS position from GLOBAL_POSITION_INT message
         :return: Dictionary with lat, lon, alt or None
         """
+
         msg = self.m.recv_match(type='GLOBAL_POSITION_INT', blocking=False)
         if msg:
             return {
@@ -158,14 +161,14 @@ class Tillerpilot:
 
 
 
-    def move_servo_absolute(self, increment):
+    def move_servo_absolute(self, position):
         self.m.mav.command_long_send(
             self.m.target_system,
             self.m.target_component,
             mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
             0,  # confirmation
             1,  # param1: Servo instance (1 for servo1)
-            increment,  # param2: PWM value
+            position,  # param2: PWM value
             0, 0, 0, 0, 0  # param3-7: unused
         )
 

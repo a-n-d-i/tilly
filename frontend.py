@@ -119,7 +119,6 @@ class RoundButton:
             print("STANDBY mode activated")
             manual = True
             tillerpilot.set_standby_mode()
-            #tillerpilot.release_servo_from_function(1)
         elif self.label == "AUTO":
             print("AUTO mode activated")
             manual = False
