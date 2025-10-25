@@ -2,6 +2,7 @@ from pymavlink import mavutil
 import time, math
 
 # TODO: Set gps filtering to something like boat or pedestriean
+# TODO: smartrtl deaktivieren
 
 class Tillerpilot:
 
@@ -22,20 +23,23 @@ class Tillerpilot:
             int(time.time()),
             self.m.target_system, self.m.target_component,
             mavutil.mavlink.MAV_FRAME_LOCAL_NED,
-            # ignore xyz, accel, yaw_rate; use vx and yaw
+            # ignore xyz, accel, yaw_rate; just use yaw
             0b100111111111,
             0,0,0,                    # x,y,z (ignored)
             0,0,0,                # vx,vy,vz (vy unused)
             0,0,0,                    # ax,ay,az (ignored)
             yaw,0)                    # yaw, yaw_rate
 
-        # maybe submode heading+speed instead?
+        # maybe submode heading+speed instead? nope, only accessible via lua, not mavlink
         # maybe mode simple?
 
 
     def init(self):
+        # TODO: set parameters at startup
+        # sim wind/wave
         self.connect()
         self.request_message_interval(33, 1000000)
+        self.arm()
 
     def arm(self):
         # ARM as in RC speak
@@ -83,7 +87,7 @@ class Tillerpilot:
             0,  # confirmation
             mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,  # param1: mode flag
             mode,  # param2: custom mode (15 = GUIDED for Sailboat)
-            3,  # param3
+            0,  # param3
             0,  # param4
             0,  # param5
             0,  # param6
@@ -101,8 +105,20 @@ class Tillerpilot:
 
     def set_auto_mode(self):
         # connect servo to control loop, 26 is GroundSteering
-        self.set_parameter("SERVO1_FUNCTION", 26, mavutil.mavlink.MAV_PARAM_TYPE_INT8)
-        self.arm()
+        # self.set_parameter("SERVO1_FUNCTION", 26, mavutil.mavlink.MAV_PARAM_TYPE_INT8)
+        # self.arm()
+        self.m.mav.rc_channels_override_send(
+            self.m.target_system,
+            self.m.target_component,
+            0,          # channel 1 (servo1)
+            0,          # channel 2 (0 = no change)
+            0,          # channel 3
+            0,          # channel 4
+            0,          # channel 5
+            0,          # channel 6
+            0,          # channel 7
+            0           # channel 8
+        )
         # 15 is guided mode for rover
         self.set_mode(15)
 
@@ -113,11 +129,12 @@ class Tillerpilot:
         # Since we can't move servos which are used in the control loop, we have to detach the servo from
         # the loop and disarm
         """
-        # 0 is manual mode
+        # 0 is manual mode, 1 acro
         self.set_mode(0)
-        self.disarm()
+        # self.disarm()
         # disconnect servo from loop
-        self.set_parameter("SERVO1_FUNCTION", 0, mavutil.mavlink.MAV_PARAM_TYPE_INT8)
+        # self.set_parameter("SERVO1_FUNCTION", 0, mavutil.mavlink.MAV_PARAM_TYPE_INT8)
+        #True
 
     def request_message_interval(self, message_id, interval_us):
         """
@@ -159,18 +176,86 @@ class Tillerpilot:
             }
         return None
 
+    def set_yaw_manual_control(self, yaw_percent):
+        """
+        Set yaw (rudder) using manual control
+
+        :param yaw_percent: Yaw control -100 to +100 percent
+                           -100 = full left rudder
+                             0 = center
+                           +100 = full right rudder
+        """
+        # Clamp to valid range
+        yaw_percent = max(-100, min(100, yaw_percent))
+
+        # Convert percent to -1000 to +1000 range
+        yaw_value = int(yaw_percent * 10)
+
+        print(f"Manual Control: Setting yaw to {yaw_percent}% ({yaw_value})")
+
+        # Send manual control message
+        self.m.mav.manual_control_send(
+            self.m.target_system,
+            0,           # x (pitch) - not used
+            0,           # y (roll) - not used
+            500,         # z (throttle) - neutral/maintain current
+            yaw_value,   # r (yaw/rudder) - -1000 to +1000
+            0            # buttons - not used
+        )
+
+
+
+    def set_servo1_rc_override(self, pwm_value):
+        """
+        Override servo1 using RC channels override
+        This bypasses all autopilot control loops
+
+        :param pwm_value: PWM value 1000-2000, or 0/65535 to release control
+        """
+        # Clamp to valid PWM range (or allow 0/65535 for release)
+        if pwm_value != 0 and pwm_value != 65535:
+            pwm_value = max(1000, min(2000, pwm_value))
+
+        print(f"RC Override: Setting servo1 to {pwm_value} PWM")
+
+        # Send RC override command
+        # Most systems use channel 1 for servo1
+        # this sends a raw command to the channel, not the servo. Expo, deadband, ... seem to apply
+        self.m.mav.rc_channels_override_send(
+            self.m.target_system,
+            self.m.target_component,
+            pwm_value,  # channel 1 (servo1)
+            0,          # channel 2 (0 = no change)
+            0,          # channel 3
+            0,          # channel 4
+            0,          # channel 5
+            0,          # channel 6
+            0,          # channel 7
+            0           # channel 8
+        )
+
+        # self.m.mav.command_long_send(
+        #     self.m.target_system,
+        #     self.m.target_component,
+        #     mavutil.mavlink.MAV_CMD_DO_REPEAT_SERVO,
+        #     1,  # confirmation
+        #     pwm_value,  # param1: Servo instance (1 for servo1)
+        #     1,  # param2: PWM value
+        #     1, 0, 0, 0, 0  # param3-7: unused
+        #)
 
 
     def move_servo_absolute(self, position):
-        self.m.mav.command_long_send(
-            self.m.target_system,
-            self.m.target_component,
-            mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
-            0,  # confirmation
-            1,  # param1: Servo instance (1 for servo1)
-            position,  # param2: PWM value
-            0, 0, 0, 0, 0  # param3-7: unused
-        )
+        self.set_servo1_rc_override(position)
+        # self.m.mav.command_long_send(
+        #     self.m.target_system,
+        #     self.m.target_component,
+        #     mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+        #     0,  # confirmation
+        #     1,  # param1: Servo instance (1 for servo1)
+        #     position,  # param2: PWM value
+        #     0, 0, 0, 0, 0  # param3-7: unused
+        # )
 
 
     def set_parameter(self, param_name, param_value, param_type=mavutil.mavlink.MAV_PARAM_TYPE_REAL32):

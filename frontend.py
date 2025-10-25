@@ -126,14 +126,12 @@ class RoundButton:
 
         if manual:
             manualServoValue += inc
-            tillerpilot.move_servo_absolute(manualServoValue)
         else:
             headingDeg += inc
             if headingDeg > 359:
                 headingDeg -= 360
             if headingDeg < 0:
                 headingDeg += 360
-            tillerpilot.send_heading(headingDeg)
 
         print(f"{self.label} was clicked, heading {headingDeg}!")
 
@@ -164,7 +162,12 @@ while running:
     # Call periodic update function at specified rate
     current_time = pygame.time.get_ticks()
     if current_time - last_update_time >= update_interval:
-        tillerpilot.send_heading(headingDeg)
+        if manual:
+            # TODO: choose values manually to avoid deadband, release after half a second or so....
+            tillerpilot.set_servo1_rc_override(manualServoValue)
+        else:
+            tillerpilot.send_heading(headingDeg)
+
         last_update_time = current_time
 
     # Get GPS position every second
