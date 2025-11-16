@@ -9,7 +9,7 @@ from tillerpilot import Tillerpilot
 pygame.init()
 
 # Constants
-SCREEN_WIDTH = 800
+SCREEN_WIDTH = 400
 SCREEN_HEIGHT = 600
 BACKGROUND_COLOR = (240, 240, 240)
 BUTTON_COLOR_BLACK = (40, 40, 40)
@@ -30,14 +30,14 @@ font = pygame.font.Font(None, FONT_SIZE)
 # Define button positions (3 rows, 2 columns)
 button_positions = [
     # Row 1
+    (100, 150),
     (300, 150),
-    (500, 150),
     # Row 2
+    (100, 300),
     (300, 300),
-    (500, 300),
     # Row 3
-    (300, 450),
-    (500, 450)
+    (100, 450),
+    (300, 450)
 ]
 
 tillerpilot = Tillerpilot()
@@ -109,6 +109,7 @@ class RoundButton:
 
         if self.label == "-1":
             inc = -1
+        # set something like delay = DELAY_SHORT
         elif self.label == "+1":
             inc = 1
         elif self.label == "-10":
@@ -159,6 +160,8 @@ while running:
                     if button.is_clicked(mouse_pos):
                         button.on_click()
 
+    # TODO: reset rudder to center after xy ticks if not in servo mode (aka using tiller without position feedback)
+
     # Call periodic update function at specified rate
     current_time = pygame.time.get_ticks()
     if current_time - last_update_time >= update_interval:
@@ -178,7 +181,7 @@ while running:
             gps_lon = gps_data['lon']
             gps_alt = gps_data['alt']
             gps_hdg = gps_data['hdg']
-            print(f"GPS: Lat={gps_lat:.7f}, Lon={gps_lon:.7f}, Alt={gps_alt:.2f}m, hdg={gps_hdg}")
+            print(f"GPS: Lat={gps_lat:.7f}, Lon={gps_lon:.7f}, Alt={gps_alt:.2f}m, curent_hdg={gps_hdg}, target_hdg")
         last_gps_update_time = current_time
 
     # Update hover states

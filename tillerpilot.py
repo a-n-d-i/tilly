@@ -4,11 +4,15 @@ import time, math
 # TODO: Set gps filtering to something like boat or pedestriean
 # TODO: smartrtl deaktivieren
 
+
+#url='udp:127.0.0.1:14550'
+url='udp:127.0.0.1:14552'
+# url='/dev/ttyACM0'
+
 class Tillerpilot:
 
     m = None
-
-    def connect(self, url='udp:127.0.0.1:14550'):
+    def connect(self, url):
         self.m = mavutil.mavlink_connection(url)
         self.m.wait_heartbeat()
         print("Heatbeat received")
@@ -16,8 +20,10 @@ class Tillerpilot:
     def send_heading(self, hdg_deg):
         # MAV_CMD_CONDITION_YAW is not supported by rover
         yaw = math.radians(hdg_deg)
-        # this is stupid?
-        #self.m.set_mode_apm()
+
+        #print("sending heading %s" % hdg_deg)
+
+        # This needs ekf position/origin, doesnt work for indoor testing and without gps fix
 
         self.m.mav.set_position_target_local_ned_send(
             int(time.time()),
@@ -30,14 +36,16 @@ class Tillerpilot:
             0,0,0,                    # ax,ay,az (ignored)
             yaw,0)                    # yaw, yaw_rate
 
+
         # maybe submode heading+speed instead? nope, only accessible via lua, not mavlink
+        # mavutil.mavlink.MAV_CMD_CONDITION_YAW not supported
         # maybe mode simple?
 
 
     def init(self):
         # TODO: set parameters at startup
         # sim wind/wave
-        self.connect()
+        self.connect(url)
         self.request_message_interval(33, 1000000)
         self.arm()
 
@@ -74,12 +82,13 @@ class Tillerpilot:
             0) # param7
 
 
-    def set_mode(self, mode):
+    def set_mode(self, mode, submode):
         """
         GUIDED mode means the tilerpilot runs the control loop and actuates the rudder, while this app is
         only pointing it in a direction.
         MANUAL is regular RC operation, move sticks to move servos
         """
+        self.arm()
         self.m.mav.command_long_send(
             self.m.target_system,
             self.m.target_component,
@@ -87,7 +96,7 @@ class Tillerpilot:
             0,  # confirmation
             mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,  # param1: mode flag
             mode,  # param2: custom mode (15 = GUIDED for Sailboat)
-            0,  # param3
+            submode,  # param3
             0,  # param4
             0,  # param5
             0,  # param6
@@ -97,44 +106,19 @@ class Tillerpilot:
         ack = self.m.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
         if ack and ack.command == mavutil.mavlink.MAV_CMD_DO_SET_MODE:
             if ack.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
-                print("Mode changed to GUIDED")
+                print("Mode changed ")
             else:
                 print(f"Mode change failed with result: {ack.result}")
         else:
             print("No acknowledgment received")
 
     def set_auto_mode(self):
-        # connect servo to control loop, 26 is GroundSteering
-        # self.set_parameter("SERVO1_FUNCTION", 26, mavutil.mavlink.MAV_PARAM_TYPE_INT8)
-        # self.arm()
-        self.m.mav.rc_channels_override_send(
-            self.m.target_system,
-            self.m.target_component,
-            0,          # channel 1 (servo1)
-            0,          # channel 2 (0 = no change)
-            0,          # channel 3
-            0,          # channel 4
-            0,          # channel 5
-            0,          # channel 6
-            0,          # channel 7
-            0           # channel 8
-        )
-        # 15 is guided mode for rover
-        self.set_mode(15)
+        self.set_mode(15,1)
 
     def set_standby_mode(self):
-        """
-        # there's a bunch of different ways to do this
-        # This sets a position and the servo stays there, don't try this with a open loop actuator
-        # Since we can't move servos which are used in the control loop, we have to detach the servo from
-        # the loop and disarm
-        """
         # 0 is manual mode, 1 acro
-        self.set_mode(0)
-        # self.disarm()
-        # disconnect servo from loop
-        # self.set_parameter("SERVO1_FUNCTION", 0, mavutil.mavlink.MAV_PARAM_TYPE_INT8)
-        #True
+        self.set_mode(0,0)
+
 
     def request_message_interval(self, message_id, interval_us):
         """
@@ -234,28 +218,9 @@ class Tillerpilot:
             0           # channel 8
         )
 
-        # self.m.mav.command_long_send(
-        #     self.m.target_system,
-        #     self.m.target_component,
-        #     mavutil.mavlink.MAV_CMD_DO_REPEAT_SERVO,
-        #     1,  # confirmation
-        #     pwm_value,  # param1: Servo instance (1 for servo1)
-        #     1,  # param2: PWM value
-        #     1, 0, 0, 0, 0  # param3-7: unused
-        #)
-
 
     def move_servo_absolute(self, position):
         self.set_servo1_rc_override(position)
-        # self.m.mav.command_long_send(
-        #     self.m.target_system,
-        #     self.m.target_component,
-        #     mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
-        #     0,  # confirmation
-        #     1,  # param1: Servo instance (1 for servo1)
-        #     position,  # param2: PWM value
-        #     0, 0, 0, 0, 0  # param3-7: unused
-        # )
 
 
     def set_parameter(self, param_name, param_value, param_type=mavutil.mavlink.MAV_PARAM_TYPE_REAL32):
@@ -267,6 +232,4 @@ class Tillerpilot:
             param_value,
             param_type
         )
-
-
 
