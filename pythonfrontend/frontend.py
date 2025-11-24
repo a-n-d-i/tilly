@@ -1,7 +1,7 @@
 import pygame
 import sys
 
-from tillerpilot import Tillerpilot
+from pythonfrontend.tillerpilot import Tillerpilot
 
 # TODO: add two text fields for desired heading and actual heading, enable messages from drone
 

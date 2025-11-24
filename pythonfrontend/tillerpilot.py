@@ -6,8 +6,8 @@ import time, math
 
 
 #url='udp:127.0.0.1:14550'
-url='udp:127.0.0.1:14552'
-# url='/dev/ttyACM0'
+#url='udp:127.0.0.1:14552'
+url='/dev/ttyACM0'
 
 class Tillerpilot:
 
