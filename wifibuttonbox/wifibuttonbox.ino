@@ -31,7 +31,7 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_CLK, TFT_R
 WiFiUDP udp;
 
 // ===== Hardware Serial Configuration =====
-#define SERIAL_RX 34  // RX2
+#define SERIAL_RX 15  // RX2
 #define SERIAL_TX 35  // TX2
 HardwareSerial ArduPilotSerial(2);  // Use UART2
 
@@ -54,9 +54,9 @@ const unsigned long displayUpdateInterval = 500;
 
 // Variables for display data
 int current_heading = 0;
+int current_heading_old = 0;
 int desired_heading = 0;
-
-bool update_desired = false;
+int desired_heading_old = 0;
 
 enum pilotModeType {STANDBY, AUTO};
 
@@ -70,7 +70,6 @@ struct Field {
 struct LowerDisplay {
   String curText;
   String desText;
-  // store old text to erase it?
   uint16_t bgColor;
 };
 
@@ -87,7 +86,6 @@ Field fields[8];
 Field prevFields[8];
 
 LowerDisplay lower;
-LowerDisplay prevLower;
 
 void drawSingleField(int index) {
   int row = index / 4;
@@ -122,15 +120,23 @@ void drawLowerDisplay() {
 
   tft.setCursor(10, y0 + 70);
   tft.print("DES: "+ lower.desText);
-
-  prevLower = lower;
 }
 
 
-void updateDesired() {
-  lower.desText = String(desired_heading);
-  tft.setCursor(50, upperH + 70);
-  tft.print(lower.desText);
+
+// this just overrides the three digit number for degrees at the specified y position
+void updateDeg(int y, int hdg, int &hdg_old) {
+  // erase old number from Display
+  tft.setCursor(115, upperH + y);
+  tft.setTextColor(lower.bgColor, lower.bgColor);
+  tft.print(String(hdg_old));
+
+  // write new number
+  tft.setTextColor(ILI9341_BLACK, lower.bgColor);
+  lower.desText = String(hdg);
+  tft.setCursor(115, upperH + y);
+  tft.print(String(hdg));
+  hdg_old = hdg;
 }
 
 
@@ -142,13 +148,7 @@ void drawFullscreen() {
       drawSingleField(i);
     }
   }
-
-  if (lower.curText != prevLower.curText ||
-      lower.desText != prevLower.desText ||
-      lower.bgColor != prevLower.bgColor)
-  {
-    drawLowerDisplay();
-  }
+  drawLowerDisplay();
 }
 
 
@@ -289,8 +289,7 @@ void handleButtons(){
     if (desired_heading < 0) {
       desired_heading +=360;
     }
-    update_desired = true;
-
+ 
     sendYawCommandDeg(ArduPilotSerial, 1, 1, desired_heading);
   }
 
@@ -327,6 +326,8 @@ void loop() {
   while (ArduPilotSerial.available() > 0) {
         uint8_t c = ArduPilotSerial.read();
 
+        //Serial.println("Char received");
+
         // Add charactar to message and try to parse / loop on until it parses/is complete
         if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
           // send to UDP
@@ -342,10 +343,11 @@ void loop() {
 
             
              if (msg.msgid == MAVLINK_MSG_ID_VFR_HUD) {
+                Serial.println("HUD Message received");
                 mavlink_vfr_hud_t hud;
                 mavlink_msg_vfr_hud_decode(&msg, &hud);
         
-                current_heading = hud.heading;   // heading in degrees (0–360)
+                current_heading = hud.heading;   // heading in degrees (0–360)               
             }
 
            if (msg.msgid == MAVLINK_MSG_ID_NAV_CONTROLLER_OUTPUT) {
@@ -383,8 +385,11 @@ void loop() {
   // Update displays
   if (millis() - lastDisplayUpdate > displayUpdateInterval) {
     lastDisplayUpdate = millis();
-    if (update_desired == true) {
-      updateDesired();
+    if (desired_heading_old != desired_heading) {     
+      updateDeg(70, desired_heading, desired_heading_old);
+    }
+    if (current_heading != current_heading_old) {
+      updateDeg(10, current_heading, current_heading_old);
     }
   }
   
