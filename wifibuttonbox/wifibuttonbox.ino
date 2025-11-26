@@ -4,9 +4,10 @@
  * - See config.h.example for template
  */
 
-#include "SPI.h"
-#include "Adafruit_GFX.h"
-#include "Adafruit_ILI9341.h"
+#define TILLY_DISPLAY
+
+#include "display.c"
+
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <ezButton.h>
@@ -15,15 +16,8 @@
 // https://github.com/okalachev/mavlink-arduino
 
 #include <ArduinoOTA.h>  // For enabling over the air updates
-#define TFT_CS    22
-#define TFT_DC    21
-#define TFT_MOSI  23  // SDA
-#define TFT_CLK   19
-#define TFT_RST   18
-#define TFT_MISO  25   // SDO or -1 if not used
-#define TFT_BACKGROUND 5
 
-Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_CLK, TFT_RST, TFT_MISO);
+#define TFT_BACKGROUND 5
 
 // Include WiFi configuration from external file
 #include "config.h"
@@ -31,8 +25,8 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_CLK, TFT_R
 WiFiUDP udp;
 
 // ===== Hardware Serial Configuration =====
-#define SERIAL_RX 15  // RX2
-#define SERIAL_TX 35  // TX2
+#define SERIAL_RX 35  // RX2
+#define SERIAL_TX 15  // TX2
 HardwareSerial ArduPilotSerial(2);  // Use UART2
 
 // ===== Button Configuration =====
@@ -43,14 +37,15 @@ ezButton minus1Button(27, INPUT_PULLUP);
 ezButton minus10Button(22, INPUT_PULLUP);
 ezButton standbyButton(13, INPUT_PULLUP);
 
-
 IPAddress remoteIP(192,168,1,255);   // destination
 uint16_t remotePort = 14550;        // destination port
-
 
 // Display update timer
 unsigned long lastDisplayUpdate = 0;
 const unsigned long displayUpdateInterval = 500;
+
+unsigned long lastMavlinkUpdate = 0;
+const unsigned long mavlinkUpdateInterval = 1000;
 
 // Variables for display data
 int current_heading = 0;
@@ -62,101 +57,7 @@ enum pilotModeType {STANDBY, AUTO};
 
 pilotModeType pilotMode = STANDBY;
 
-struct Field {
-  String text;      
-  uint16_t bgColor; 
-};
-
-struct LowerDisplay {
-  String curText;
-  String desText;
-  uint16_t bgColor;
-};
-
-// ----- SCREEN GEOMETRY (LANDSCAPE 320x240) -----
-const int W = 320;
-const int H = 240;
-
-const int upperH = H / 2;     // 120px
-const int rowH   = upperH / 2;
-const int colW   = W / 4;     // 4 columns across 320px
-
-// ----- DATA -----
-Field fields[8];
-Field prevFields[8];
-
-LowerDisplay lower;
-
-void drawSingleField(int index) {
-  int row = index / 4;
-  int col = index % 4;
-
-  int x = col * colW;
-  int y = row * rowH;
-
-  tft.fillRect(x, y, colW, rowH, fields[index].bgColor);
-
-  tft.setTextColor(ILI9341_BLACK, fields[index].bgColor);
-  tft.setTextSize(2);
-  tft.setCursor(x + 4, y + 4);
-  tft.print(fields[index].text);
-
-  tft.drawRect(x, y, colW, rowH, ILI9341_BLACK);
-
-  prevFields[index] = fields[index];
-}
-
-void drawLowerDisplay() {
-  int y0 = upperH;
-  int h  = H - upperH;
-
-  tft.fillRect(0, y0, W, h, lower.bgColor);
-
-  tft.setTextColor(ILI9341_BLACK, lower.bgColor);
-  tft.setTextSize(4);
-
-  tft.setCursor(10, y0 + 10);
-  tft.print("CUR: " + lower.curText);
-
-  tft.setCursor(10, y0 + 70);
-  tft.print("DES: "+ lower.desText);
-}
-
-
-
-// this just overrides the three digit number for degrees at the specified y position
-void updateDeg(int y, int hdg, int &hdg_old) {
-  // erase old number from Display
-  tft.setCursor(115, upperH + y);
-  tft.setTextColor(lower.bgColor, lower.bgColor);
-  tft.print(String(hdg_old));
-
-  // write new number
-  tft.setTextColor(ILI9341_BLACK, lower.bgColor);
-  lower.desText = String(hdg);
-  tft.setCursor(115, upperH + y);
-  tft.print(String(hdg));
-  hdg_old = hdg;
-}
-
-
-void drawFullscreen() {
-  for (int i = 0; i < 8; i++) {
-    if (fields[i].text    != prevFields[i].text ||
-        fields[i].bgColor != prevFields[i].bgColor)
-    {
-      drawSingleField(i);
-    }
-  }
-  drawLowerDisplay();
-}
-
-
-
 void setup() {
-  tft.begin();
-  tft.setRotation(1);   // <<< LANDSCAPE MODE
-  tft.fillScreen(ILI9341_BLACK);
   
   ArduinoOTA
     .onStart([]() {
@@ -194,12 +95,12 @@ void setup() {
   ArduinoOTA.setHostname("tilly-buttonbox");
   
   pinMode(TFT_BACKGROUND, OUTPUT);    // sets the digital pin 13 as output
-  analogWrite(5, 500); // 0 -> full brightness/whiteout, 1024 -> off
+  analogWrite(5, 200); // 0 -> full brightness/whiteout, 1024 -> off
   Serial.begin(115200);
   Serial.println("Tillys little helper");
   
   // Initialize ArduPilot Serial
-  ArduPilotSerial.begin(115200, SERIAL_8N1, SERIAL_RX, SERIAL_TX);+
+  ArduPilotSerial.begin(115200, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
   Serial.println("ArduPilot Serial initialized");
 
   plus1Button.setDebounceTime(50);
@@ -234,18 +135,14 @@ void setup() {
   udp.begin(udpPort);
   //Serial.printf("UDP listening on port %d\n", udpPort);
   requestNavControllerOutput(ArduPilotSerial, 1, 1);
-  
-  for (int i = 0; i < 8; i++) {
-    fields[i].text = "F" + String(i);
-    fields[i].bgColor = ILI9341_GREEN;
-  }
 
+  #ifdef TILLY_DISPLAY
   lower.curText = String(current_heading);
   lower.desText = String(desired_heading);
-  lower.bgColor = ILI9341_RED;
-
-  drawFullscreen();
+  initTillyDisplay();
+  #endif
   
+  sendArmCommand();
 }
 
 void handleButtons(){
@@ -257,29 +154,34 @@ void handleButtons(){
   standbyButton.loop();
 
   if (pilotMode == STANDBY) {
+      if(plus1Button.isPressed()){        
+        Serial.println("+1 step");
+        
+      }
+    
 
     // TODO: Send RC override
     
   } else {
-
+    
     if(plus1Button.isPressed()){
       desired_heading += 1;
-      Serial.println("+1");
+      Serial.println("+1 deg");
     }
   
     if(plus10Button.isPressed()){
       desired_heading += 10;
-      Serial.println("+10");
+      Serial.println("+10 deg");
     }
 
     if(minus1Button.isPressed()){
       desired_heading -= 1;
-      Serial.println("-1");
+      Serial.println("-1 deg");
     }
   
     if(minus10Button.isPressed()){
       desired_heading -= 10;
-      Serial.println("-10");
+      Serial.println("-10 deg");
     }
 
     if (desired_heading > 359) {
@@ -289,8 +191,6 @@ void handleButtons(){
     if (desired_heading < 0) {
       desired_heading +=360;
     }
- 
-    sendYawCommandDeg(ArduPilotSerial, 1, 1, desired_heading);
   }
 
 
@@ -298,8 +198,11 @@ void handleButtons(){
   if(standbyButton.isPressed() && pilotMode == AUTO){
     pilotMode = STANDBY;
     Serial.println("Standby");
+    setManualMode();
+    #ifdef TILLY_DISPLAY
     lower.bgColor = ILI9341_RED;
     drawLowerDisplay();
+    #endif
   }
   
   
@@ -307,8 +210,13 @@ void handleButtons(){
     pilotMode = AUTO;
     desired_heading = current_heading;
     Serial.println("Auto");  
+    setGuidedMode();
+    // TODO: don't do this every time?
+    sendArmCommand();
+    #ifdef TILLY_DISPLAY
     lower.bgColor = ILI9341_GREEN;
     drawLowerDisplay();
+    #endif
   }
 }
 
@@ -336,6 +244,8 @@ void loop() {
             uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
             uint16_t len = mavlink_msg_to_send_buffer(buffer, &msg);
 
+            // TODO: decide wether package is for us or someone else?...
+
             // Send via UDP
             udp.beginPacket(remoteIP, remotePort);
             udp.write(buffer, len);
@@ -343,11 +253,11 @@ void loop() {
 
             
              if (msg.msgid == MAVLINK_MSG_ID_VFR_HUD) {
-                Serial.println("HUD Message received");
                 mavlink_vfr_hud_t hud;
                 mavlink_msg_vfr_hud_decode(&msg, &hud);
         
                 current_heading = hud.heading;   // heading in degrees (0–360)               
+                Serial.println("Heading: " + String(current_heading));
             }
 
            if (msg.msgid == MAVLINK_MSG_ID_NAV_CONTROLLER_OUTPUT) {
@@ -380,8 +290,14 @@ void loop() {
     udp.read(buf, MAVLINK_MAX_PACKET_LEN);
     ArduPilotSerial.write(buf, packetSize);
   }
-  
 
+  // GUIDED Mode needs updates at least every three seconds or it stops
+  if (millis() - lastMavlinkUpdate >  mavlinkUpdateInterval) {
+      sendYawCommandDeg(ArduPilotSerial, 1, 1, desired_heading);
+      lastMavlinkUpdate = millis();
+  }
+  
+  #ifdef TILLY_DISPLAY
   // Update displays
   if (millis() - lastDisplayUpdate > displayUpdateInterval) {
     lastDisplayUpdate = millis();
@@ -392,7 +308,73 @@ void loop() {
       updateDeg(10, current_heading, current_heading_old);
     }
   }
+  #endif
+}
+
+
+void sendArmCommand(){
+
+    mavlink_message_t msg;
   
+    // Pack the MAVLink message directly
+    mavlink_msg_command_long_pack(
+        250,          // system ID
+        1,       // component ID
+        &msg,                   // message struct
+        1,          // target system
+        1,       // target component
+        MAV_CMD_COMPONENT_ARM_DISARM,
+            0, // confirmation
+            1, // param1 (0 to indicate disarm)
+            0, // param2 (all other params meaningless)
+            0, // param3
+            0, // param4
+            0, // param5
+            0, // param6
+            0); // param7
+
+    // Serialize and send over serial
+    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+    Serial.println("Sending ARM to tilly");
+    ArduPilotSerial.write(buf, len);
+}
+
+void setGuidedMode() {
+  sendModeCommand(15, 1);
+} 
+
+void setManualMode() {
+  sendModeCommand(0, 0);
+} 
+
+
+void sendModeCommand(int modeNumber, int subMode){
+
+    mavlink_message_t msg;
+  
+    // Pack the MAVLink message directly
+    mavlink_msg_command_long_pack(
+        250,          // system ID
+        1,       // component ID
+        &msg,                   // message struct
+        1,          // target system
+        1,       // target component
+        MAV_CMD_DO_SET_MODE,
+            0, // confirmation
+            MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, // param1 (0 to indicate disarm)
+            modeNumber, // 15 -> guided sailboat, 0 manual
+            subMode, // param3
+            0, // param4
+            0, // param5
+            0, // param6
+            0); // param7
+
+    // Serialize and send over serial
+    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+    Serial.println("Sending Mode to tilly");
+    ArduPilotSerial.write(buf, len);
 }
 
 
@@ -404,12 +386,12 @@ void sendYawCommandDeg(Stream &serial, uint8_t target_system, uint8_t target_com
 
     // Pack the MAVLink message directly
     mavlink_msg_set_position_target_local_ned_pack(
-        target_system,          // system ID
-        target_component,       // component ID
+        250,          // system ID
+        1,       // component ID
         &msg,                   // message struct
         millis(),               // timestamp (ms since boot)
-        target_system,          // target system
-        target_component,       // target component
+        1,          // target system
+        1,       // target component
         MAV_FRAME_LOCAL_NED,    // frame
         0b100111111111,         // type_mask: ignore position, velocity, acceleration
         0, 0, 0,                // x, y, z (ignored)
@@ -422,6 +404,7 @@ void sendYawCommandDeg(Stream &serial, uint8_t target_system, uint8_t target_com
     // Serialize and send over serial
     uint8_t buf[MAVLINK_MAX_PACKET_LEN];
     uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+    Serial.println("writing to tilly");
     serial.write(buf, len);
 }
 

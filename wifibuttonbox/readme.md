@@ -34,3 +34,10 @@ Tilly Button
 Black White GND
 Orange Green 
 yellow yellow
+
+
+
+Development: Set the SITL SERIALX Parameters to serial6, 115200
+
+start SITL and forward the serial port of the simulation to the buttonbox
+sim_vehicle.py -v Rover -f sailboat -L ANDI -A  "--serial6=uart:/dev/ttyUSB1" --console --map
