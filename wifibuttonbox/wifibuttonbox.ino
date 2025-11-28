@@ -1,7 +1,10 @@
-
-/* Configuration:
- * - Create a file named "config.h" in the same folder as this sketch
- * - See config.h.example for template
+/*
+ * Primers
+ * 
+ * This has no error handling yet. It's all fire and forget.
+ * How long do the acks take, maybe just active wait since esp stuff continus running in the background?
+ * It also has no notion of multitasking or async. The slow display blocks everything.
+ * Why am I doing this in arduino again?
  */
 
 #define TILLY_DISPLAY
@@ -11,7 +14,7 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <ezButton.h>
-#include <MAVLink.h>
+#include <MAVLink_ardupilotmega.h>
 // Include MAVLink library - using ardupilotmega dialect for full ArduPilot support
 // https://github.com/okalachev/mavlink-arduino
 
@@ -37,7 +40,7 @@ ezButton minus1Button(27, INPUT_PULLUP);
 ezButton minus10Button(22, INPUT_PULLUP);
 ezButton standbyButton(13, INPUT_PULLUP);
 
-IPAddress remoteIP(192,168,1,255);   // destination
+IPAddress remoteIP(192,168,1,255);   // udp broadcast
 uint16_t remotePort = 14550;        // destination port
 
 // Display update timer
@@ -47,6 +50,23 @@ const unsigned long displayUpdateInterval = 500;
 unsigned long lastMavlinkUpdate = 0;
 const unsigned long mavlinkUpdateInterval = 1000;
 
+/* 
+ *  So, manual steering is a bit of a thing. In the RC world steering is value of
+ *  1000-2000 with 1500 being midhsip. This can either control position or speed 
+ *  (as in hard left or move the rudder as fast as possible to the left). 
+ *  ATM, we have no rudder position sensor, so we use the speed variant.
+ *  
+ *  So in manual mode, we have to send the ovveride signal for a specified time. 
+ *  Like 1250 for 1s to move the arm one "blip" like you would pressing +1 in standby 
+ *  mode on an autopilot. 
+ *   
+ *  So we have an end time for the override which is now + hangtime.
+ */
+
+unsigned int rc_ovveride_end = millis();
+const unsigned int rc_overide_hangtime_1 = 500; 
+const unsigned int rc_overide_hangtime_10 = 3000;
+
 // Variables for display data
 int current_heading = 0;
 int current_heading_old = 0;
@@ -54,6 +74,8 @@ int desired_heading = 0;
 int desired_heading_old = 0;
 
 enum pilotModeType {STANDBY, AUTO};
+
+enum statusPanelType {GPS, EKF};
 
 pilotModeType pilotMode = STANDBY;
 
@@ -111,8 +133,6 @@ void setup() {
   standbyButton.setDebounceTime(50);  
   Serial.println("Buttons initialized");
   
-  // Initialize displays
-  Serial.println("Display initialized");
   
   // Connect to WiFi
   WiFi.mode(WIFI_STA);
@@ -134,13 +154,15 @@ void setup() {
   // Start UDP
   udp.begin(udpPort);
   //Serial.printf("UDP listening on port %d\n", udpPort);
-  requestNavControllerOutput(ArduPilotSerial, 1, 1);
 
   #ifdef TILLY_DISPLAY
   lower.curText = String(current_heading);
   lower.desText = String(desired_heading);
   initTillyDisplay();
+  Serial.println("Display initialized");
   #endif
+
+  requestMessageStream(MAVLINK_MSG_ID_GPS_INPUT);
   
   sendArmCommand();
 }
@@ -156,12 +178,24 @@ void handleButtons(){
   if (pilotMode == STANDBY) {
       if(plus1Button.isPressed()){        
         Serial.println("+1 step");
-        
+        sendRcOverride(1200, rc_overide_hangtime_1);
+      }
+
+      if(plus10Button.isPressed()){        
+        Serial.println("+10 step");
+        sendRcOverride(1200, rc_overide_hangtime_10);
       }
     
-
-    // TODO: Send RC override
+      if(minus1Button.isPressed()){
+        Serial.println("-1 step");
+        sendRcOverride(1800, rc_overide_hangtime_1);
+      }
     
+      if(minus10Button.isPressed()){
+        Serial.println("-10 step");
+        sendRcOverride(1800, rc_overide_hangtime_10);
+      }
+       
   } else {
     
     if(plus1Button.isPressed()){
@@ -202,6 +236,8 @@ void handleButtons(){
     #ifdef TILLY_DISPLAY
     lower.bgColor = ILI9341_RED;
     drawLowerDisplay();
+    updateDeg(70, desired_heading, desired_heading_old);
+    updateDeg(10, current_heading, current_heading_old);
     #endif
   }
   
@@ -216,6 +252,8 @@ void handleButtons(){
     #ifdef TILLY_DISPLAY
     lower.bgColor = ILI9341_GREEN;
     drawLowerDisplay();
+    updateDeg(70, desired_heading, desired_heading_old);
+    updateDeg(10, current_heading, current_heading_old);
     #endif
   }
 }
@@ -244,7 +282,7 @@ void loop() {
             uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
             uint16_t len = mavlink_msg_to_send_buffer(buffer, &msg);
 
-            // TODO: decide wether package is for us or someone else?...
+            // TODO: decide weather package is for us or someone else?...
 
             // Send via UDP
             udp.beginPacket(remoteIP, remotePort);
@@ -252,31 +290,45 @@ void loop() {
             udp.endPacket();
 
             
-             if (msg.msgid == MAVLINK_MSG_ID_VFR_HUD) {
+            if (msg.msgid == MAVLINK_MSG_ID_VFR_HUD) {
                 mavlink_vfr_hud_t hud;
                 mavlink_msg_vfr_hud_decode(&msg, &hud);
         
                 current_heading = hud.heading;   // heading in degrees (0–360)               
-                Serial.println("Heading: " + String(current_heading));
+                //Serial.println("Heading: " + String(current_heading));
             }
 
-           if (msg.msgid == MAVLINK_MSG_ID_NAV_CONTROLLER_OUTPUT) {
-              mavlink_nav_controller_output_t nav;
-              mavlink_msg_nav_controller_output_decode(&msg, &nav);
-      
-              Serial.print("Nav Controller Output - ");
-              Serial.print("Nav_roll: "); Serial.print(nav.nav_roll);
-              Serial.print(" | Nav_pitch: "); Serial.print(nav.nav_pitch);
-              Serial.print(" | Alt_error: "); Serial.print(nav.alt_error);
-              Serial.print(" | Aspd_error: "); Serial.print(nav.aspd_error);
-              Serial.print(" | Xtrack_error: "); Serial.print(nav.xtrack_error);
-              Serial.print(" | Target_bearing: "); Serial.print(nav.target_bearing);
-              Serial.print(" | WP_dist: "); Serial.println(nav.wp_dist);
+
+          if (msg.msgid == MAVLINK_MSG_ID_EKF_STATUS_REPORT) {
+            mavlink_ekf_status_report_t ekf_status;
+            mavlink_msg_ekf_status_report_decode(&msg, &ekf_status);
+            //Serial.println("EKF Status " + String(ekf_status.flags));
+            if (ekf_status.flags & EKF_ATTITUDE) {
+              fields[EKF].bgColor = ILI9341_GREEN;
+            } else {
+              fields[EKF].bgColor = ILI9341_RED;
+            }
+            fields[EKF].text = "EKF";              
           }
-                  
-            break;
+
+          // this is raw gps data, non fused. maybe change?
+          if (msg.msgid == MAVLINK_MSG_ID_GPS_RAW_INT) {
+            mavlink_gps_raw_int_t gps_status;
+            mavlink_msg_gps_raw_int_decode(&msg, &gps_status);
+            //Serial.println("GPS number SATS " + String(gps_status.satellites_visible));
+            if (gps_status.satellites_visible >= 6) {
+              fields[GPS].bgColor = ILI9341_GREEN;
+            } else {
+              fields[GPS].bgColor = ILI9341_RED;
+            }
+            fields[GPS].text = "SATS: \n   " + String(gps_status.satellites_visible);              
+            
+          }                 
+          break;
         }
     }
+
+   yield();
 
   // ---------------------------
   // UDP → Serial
@@ -290,6 +342,8 @@ void loop() {
     udp.read(buf, MAVLINK_MAX_PACKET_LEN);
     ArduPilotSerial.write(buf, packetSize);
   }
+  
+  yield();
 
   // GUIDED Mode needs updates at least every three seconds or it stops
   if (millis() - lastMavlinkUpdate >  mavlinkUpdateInterval) {
@@ -307,8 +361,21 @@ void loop() {
     if (current_heading != current_heading_old) {
       updateDeg(10, current_heading, current_heading_old);
     }
+
+    // find out wich top fields to update...
+    for (int i = 0; i < 8; i++) {
+      if (fields[i].text    != prevFields[i].text ||
+        fields[i].bgColor != prevFields[i].bgColor)
+        {
+        drawSingleField(i);
+      }
+  }
   }
   #endif
+  // move the "steering stick" back to center
+  if (rc_ovveride_end < millis()) {
+    sendRcOverride(1500, 0);
+  }
 }
 
 
@@ -404,14 +471,12 @@ void sendYawCommandDeg(Stream &serial, uint8_t target_system, uint8_t target_com
     // Serialize and send over serial
     uint8_t buf[MAVLINK_MAX_PACKET_LEN];
     uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-    Serial.println("writing to tilly");
+    //Serial.println("writing to tilly");
     serial.write(buf, len);
 }
 
-// -------------------------------------------
-// Request NAV_CONTROLLER_OUTPUT message
-// -------------------------------------------
-void requestNavControllerOutput(Stream &serial, uint8_t target_sys, uint8_t target_comp) {
+
+void requestMessageStream(uint8_t message_number) {
     mavlink_message_t msg;
 
     // Send REQUEST_DATA_STREAM
@@ -419,9 +484,9 @@ void requestNavControllerOutput(Stream &serial, uint8_t target_sys, uint8_t targ
         255,  // sender system (255 = GCS/this device)
         0,    // sender component
         &msg,
-        target_sys,
-        target_comp,
-        MAV_DATA_STREAM_EXTRA1, // NAV_CONTROLLER_OUTPUT is part of EXTRA1
+        1,
+        1,
+        MAVLINK_MSG_ID_GPS_INPUT, 
         1,    // message rate (1 Hz)
         1     // start streaming
     );
@@ -429,5 +494,35 @@ void requestNavControllerOutput(Stream &serial, uint8_t target_sys, uint8_t targ
     // Serialize and send
     uint8_t buf[MAVLINK_MAX_PACKET_LEN];
     uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-    serial.write(buf, len);
+    ArduPilotSerial.write(buf, len);
+}
+
+
+
+void sendRcOverride(uint16_t value, unsigned int hangtime) {
+
+    mavlink_message_t msg;
+
+    // Send REQUEST_DATA_STREAM
+    mavlink_msg_rc_channels_override_pack(
+        255,  // sender system. Has to be 255 for rc_override, anything else seems to be ignored
+        0,    // sender component
+        &msg,
+        1,
+        1,
+        value,  // channel 1 (servo1)
+        0,      // channel 2 (0 = no change)
+        0,      // channel 3
+        0,      // channel 4
+        0,      // channel 5
+        0,      // channel 6
+        0,      // channel 7
+        0,0,0,0,0,0,0,0,0,0,0       // channel 8-18
+    );
+
+    // Serialize and send
+    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+    ArduPilotSerial.write(buf, len);
+    rc_ovveride_end = millis() + hangtime;
 }
