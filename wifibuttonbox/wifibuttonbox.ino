@@ -75,9 +75,13 @@ int desired_heading_old = 0;
 
 enum pilotModeType {STANDBY, AUTO};
 
-enum statusPanelType {GPS, EKF};
+enum statusPanelType {GPS, EKF, MAG, INS, AHRS, PRE, LOG};
 
 pilotModeType pilotMode = STANDBY;
+
+bool rc_override_active = false;
+
+bool wifi = false;
 
 void setup() {
   
@@ -138,23 +142,27 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
+
+  int wifiTimeout = millis() + 5000;
   
-  while (WiFi.status() != WL_CONNECTED) {
+  while ((WiFi.status() != WL_CONNECTED) and (millis() < wifiTimeout)){
     delay(500);
     //ESP.restart();
     Serial.print(".");
   }
   
-  Serial.println("\nWiFi connected!");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-
-  ArduinoOTA.begin();  // Starts OTA
+  if (WiFi.status() == WL_CONNECTED) {
+    wifi = true;
+    Serial.println("\nWiFi connected!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
   
-  // Start UDP
-  udp.begin(udpPort);
-  //Serial.printf("UDP listening on port %d\n", udpPort);
-
+    ArduinoOTA.begin();  // Starts OTA
+    
+    // Start UDP
+    udp.begin(udpPort);
+    //Serial.printf("UDP listening on port %d\n", udpPort);
+  }
   #ifdef TILLY_DISPLAY
   lower.curText = String(current_heading);
   lower.desText = String(desired_heading);
@@ -258,9 +266,19 @@ void handleButtons(){
   }
 }
 
+void setFieldFromFlag(String name, statusPanelType field, mavlink_sys_status_t message, uint16_t flag) {
+  if(message.onboard_control_sensors_health & flag ) {
+     fields[field].bgColor = ILI9341_GREEN;
+  } else {
+     fields[field].bgColor = ILI9341_RED;
+  }
+  fields[field].text = name;
+  
+}
+
 
 void loop() {
-  ArduinoOTA.handle(); 
+  if (wifi == true) ArduinoOTA.handle(); 
   handleButtons();
   
   // ---------------------------
@@ -283,11 +301,12 @@ void loop() {
             uint16_t len = mavlink_msg_to_send_buffer(buffer, &msg);
 
             // TODO: decide weather package is for us or someone else?...
-
-            // Send via UDP
-            udp.beginPacket(remoteIP, remotePort);
-            udp.write(buffer, len);
-            udp.endPacket();
+            if (wifi == true) {
+              // Send via UDP
+              udp.beginPacket(remoteIP, remotePort);
+              udp.write(buffer, len);
+              udp.endPacket();
+            }
 
             
             if (msg.msgid == MAVLINK_MSG_ID_VFR_HUD) {
@@ -298,6 +317,44 @@ void loop() {
                 //Serial.println("Heading: " + String(current_heading));
             }
 
+            if (msg.msgid == MAVLINK_MSG_ID_SYS_STATUS) {
+                mavlink_sys_status_t sys;
+                mavlink_msg_sys_status_decode(&msg, &sys);
+
+                // Taken from the mavproxy console source code
+
+                setFieldFromFlag("MAG", MAG, sys, MAV_SYS_STATUS_SENSOR_3D_MAG);
+                setFieldFromFlag("INS", INS, sys, MAV_SYS_STATUS_SENSOR_3D_ACCEL | MAV_SYS_STATUS_SENSOR_3D_GYRO);
+                setFieldFromFlag("AHRS", AHRS, sys, MAV_SYS_STATUS_AHRS);
+                setFieldFromFlag("PRE", PRE, sys, MAV_SYS_STATUS_PREARM_CHECK);
+                // why red?
+                //setFieldFromFlag("LOG", LOG, sys, MAV_SYS_STATUS_LOGGING);
+                
+
+                
+            
+            }
+
+            
+          /*
+           * 
+           * from the console source code
+           *             sensors = { 'AS'   : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_DIFFERENTIAL_PRESSURE,
+                        'MAG'  : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_3D_MAG,
+                        'INS'  : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_3D_ACCEL | mavutil.mavlink.MAV_SYS_STATUS_SENSOR_3D_GYRO,
+                        'AHRS' : mavutil.mavlink.MAV_SYS_STATUS_AHRS,
+                        'RC'   : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_RC_RECEIVER,
+                        'TERR' : mavutil.mavlink.MAV_SYS_STATUS_TERRAIN,
+                        'RNG'  : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_LASER_POSITION,
+                        'LOG'  : mavutil.mavlink.MAV_SYS_STATUS_LOGGING,
+                        'PRX'  : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_PROXIMITY,
+                        'PRE'  : mavutil.mavlink.MAV_SYS_STATUS_PREARM_CHECK,
+                        'FLO'  : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_OPTICAL_FLOW,
+           * 
+           * 
+           * 
+           * 
+           */
 
           if (msg.msgid == MAVLINK_MSG_ID_EKF_STATUS_REPORT) {
             mavlink_ekf_status_report_t ekf_status;
@@ -333,20 +390,22 @@ void loop() {
   // ---------------------------
   // UDP → Serial
   // ---------------------------
-  
-  int packetSize = udp.parsePacket();
-  if (packetSize) {
 
-    // Read UDP packet
-    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-    udp.read(buf, MAVLINK_MAX_PACKET_LEN);
-    ArduPilotSerial.write(buf, packetSize);
+  if (wifi == true) {
+    int packetSize = udp.parsePacket();
+    if (packetSize) {
+  
+      // Read UDP packet
+      uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+      udp.read(buf, MAVLINK_MAX_PACKET_LEN);
+      ArduPilotSerial.write(buf, packetSize);
+    }
   }
   
   yield();
 
   // GUIDED Mode needs updates at least every three seconds or it stops
-  if (millis() - lastMavlinkUpdate >  mavlinkUpdateInterval) {
+  if ((pilotMode == AUTO) && (millis() - lastMavlinkUpdate >  mavlinkUpdateInterval)) {
       sendYawCommandDeg(ArduPilotSerial, 1, 1, desired_heading);
       lastMavlinkUpdate = millis();
   }
@@ -373,8 +432,9 @@ void loop() {
   }
   #endif
   // move the "steering stick" back to center
-  if (rc_ovveride_end < millis()) {
+  if (rc_override_active == true && rc_ovveride_end < millis()) {
     sendRcOverride(1500, 0);
+    rc_override_active = false;
   }
 }
 
@@ -525,4 +585,36 @@ void sendRcOverride(uint16_t value, unsigned int hangtime) {
     uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
     ArduPilotSerial.write(buf, len);
     rc_ovveride_end = millis() + hangtime;
+    rc_override_active = true;
+}
+
+
+
+void sendCompassCalibrationCommand(){
+
+    mavlink_message_t msg;
+  
+    // Pack the MAVLink message directly
+    mavlink_msg_command_long_pack(
+        250,          // system ID
+        1,       // component ID
+        &msg,                   // message struct
+        1,          // target system
+        1,       // target component
+        MAV_CMD_DO_START_MAG_CAL,
+         0,   // confirmation
+         1,   // param1: auto retry
+         1,   // param2: auto save
+         0,   // param3: delay
+         1,   // param4: LARGE VEHICLE MODE
+         0,   // param5: motor compensation (0 = no)
+         0,   // param6 (unused)
+         0    // param7 (unused)
+  );
+
+    // Serialize and send over serial
+    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+    Serial.println("CompassCalibration");
+    ArduPilotSerial.write(buf, len);
 }
