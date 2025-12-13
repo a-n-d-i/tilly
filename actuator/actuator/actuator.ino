@@ -34,13 +34,17 @@
 // or min_voltage? Where is stuff converted to voltage anyways?
 // do own dcdriver with min voltage? might cause 
 
+
+// min speed 300...
+
 #include <Arduino.h>
 
 #include "SimpleFOC.h"
 #include "SimpleFOCDrivers.h"
 #include "SimpleDCMotor.h"
 #include "DCLinearActuatorDriver1PWM2Dir.h"
-//#include "sloppypid.h"
+#include "DCLinearActuatorMotor.h"
+
 
 // DCDriver object
 // there are different types to choose from, please select the correct one
@@ -52,11 +56,12 @@
 #define PIN_DIRA 5
 #define PIN_DIRB 6
 
+#define PID_ANGLE_DEADBAND 1
+#define PID_Velocity_DEADBAND 1
 
 
 
-
-class MyDCDriver : public DCDriver1PWM2Dir {
+/*class MyDCDriver : public DCDriver1PWM2Dir {
 public:
     // Forward the base-class constructor
     MyDCDriver(int pwm_pin, int dir1_pin, int dir2_pin)
@@ -70,66 +75,17 @@ public:
           DCDriver1PWM2Dir::setPwm(pwm);
         }        
     }
-};
+};*/
 
-MyDCDriver driver = MyDCDriver(PIN_PWM, PIN_DIRA, PIN_DIRB);
+//MyDCDriver driver = MyDCDriver(PIN_PWM, PIN_DIRA, PIN_DIRB);
 
 
 //DCDriver1PWM2Dir driver = DCDriver1PWM2Dir(PIN_PWM, PIN_DIRA, PIN_DIRB, NOT_SET);
 
-class PIDWithDeadband : public PIDController {
-public:
-    float deadband = 0.00f;   // default deadband (adjust as needed)
-
-    PIDWithDeadband(float P, float I, float D, float output_ramp = 100000.0f, float limit=0) : PIDController(P, I, D, output_ramp, limit)
-    {
-        this->P = P;
-        this->I = I;
-        this->D = D;
-        this->output_ramp = output_ramp;
-    }
-
-
-    // Override the PID compute operator
-    float operator()(float error) {
-      Serial.print("foo");
-        // Apply deadband BEFORE PID math
-        if (fabsf(error) < deadband) {
-            return 0.0f;
-        }
-
-        Serial.println("Error " + String(error));
-
-        // Call the base PID logic
-        float out = PIDController::operator()(error);
-
-        return out;
-    }
-};
-
-
-class CustomDCMotor : public DCMotor {
-public:
-
-  /*  CustomDCMotor() : DCMotor() {
-      Serial.println("custom");
-      }*/
-
-    PIDWithDeadband PID_velocity{DEF_PID_VEL_P,DEF_PID_VEL_I,DEF_PID_VEL_D,DEF_PID_VEL_RAMP,DEF_PID_VEL_LIMIT};//!< parameter determining the velocity PID configuration
-    PIDWithDeadband P_angle{DEF_P_ANGLE_P,0,0,0,DEF_VEL_LIM};  //!< parameter determining the position PID configuration 
-
-
-};
-
+DCLinearActuatorDriver1PWM2Dir driver = DCLinearActuatorDriver1PWM2Dir(PIN_PWM, PIN_DIRA, PIN_DIRB, NOT_SET);
 
 // DCMotor object
-DCMotor motor = DCMotor();
-//CustomDCMotor motor = CustomDCMotor();
-
-
-
-PIDWithDeadband p = PIDWithDeadband(DEF_P_ANGLE_P,0,0,0,DEF_VEL_LIM);  //!< parameter determining the position PID configuration 
-//PIDWithDeadband v = PIDWithDeadband(DEF_PID_VEL_P,DEF_PID_VEL_I,DEF_PID_VEL_D,DEF_PID_VEL_RAMP,DEF_PID_VEL_LIMIT);  //!< parameter determining the position PID configuration 
+DCLinearActuatorMotor motor = DCLinearActuatorMotor();
 
 MagneticSensorI2C sensor = MagneticSensorI2C(AS5600_I2C);
 // Commander object, used for serial control
@@ -159,8 +115,6 @@ void setup() {
   // enable debug output to the serial port
   SimpleFOCDebug::enable();
 
-  motor.P_angle = p;
-  
   // basic driver setup - set power supply voltage
   driver.voltage_power_supply = 12.0f;
   // if you want, you can limit the voltage used by the driver.
@@ -183,8 +137,8 @@ void setup() {
   motor.voltage_limit = 12.0f;
   //motor.velocity_limit = 500.0f;
   // control type - for this example we use position mode.
-  motor.controller = MotionControlType::angle;
-  //motor.controller = MotionControlType::velocity;
+  //motor.controller = MotionControlType::angle;
+  motor.controller = MotionControlType::velocity;
   motor.torque_controller = TorqueControlType::voltage;
   // init motor
   motor.init();
@@ -209,7 +163,7 @@ void setup() {
   // by the sensor, at the cost of latency and control responsiveness.
   // Generally speaking, the lower this value can be while still producing good
   // response, the better.
-  motor.LPF_velocity.Tf = 0.01f;
+  motor.LPF_velocity.Tf = 0.05f;
   motor.LPF_angle.Tf = 0.01f;
   // angle P-controller P parameter setting. Normally this can
   // be set to a fairly high value.
