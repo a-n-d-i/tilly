@@ -9,8 +9,6 @@ const int PWM_PIN  = 3;   // PWM output
 const int DIR_PIN  = 5;   // direction
 const int DIR_PIN2 = 6;   // second direction pin (or LOW if driver only needs 1)
 
-// ----------------------- SPEED CALCULATION -------------------------
-float currentSpeedDegS = 0.0f;  // [deg/s]
 
 // ------------------------ POSITION CONTROL -------------------------
 float targetPositionMM = 30.0f;  // [mm]
@@ -23,7 +21,6 @@ const int serialPeriod = 1000;
 
 // Conversion: 0.24 mm per full 360° turn
 const float MM_PER_TURN = 0.24f;
-
 
 //Define Variables we'll be connecting to
 float Input, Output;
@@ -40,30 +37,7 @@ int plannedDirection = CW;
 int currentDirection = CW;
 
 
-// ===================================================================
-// SAFE DIRECTION CONTROL
-// ===================================================================
-void setDirectionSafe(bool dir) {
-  if (dir == currentDirection) return;
-
-  if (abs(currentSpeedDegS) > 10.0f) return;
-
-  currentDirection = dir;
-  digitalWrite(DIR_PIN,  currentDirection ? HIGH : LOW);
-  digitalWrite(DIR_PIN2, currentDirection ? LOW : HIGH);
-}
-
-
-// ===================================================================
-// MOTOR POWER OUTPUT
-// ===================================================================
-void setMotorPower(float pwmVal) {
-  pwmVal = constrain(pwmVal, 0, 255);
-  analogWrite(PWM_PIN, pwmVal);
-}
-
-
-QuickPID myQuickPID(&Input, &Output, &commandedSpeed, Kp, Ki, Kd, QuickPID::DIRECT);
+QuickPID velocityPID(&Input, &Output, &commandedSpeed, Kp, Ki, Kd, QuickPID::DIRECT);
 
 void setup()
 {
@@ -71,32 +45,13 @@ void setup()
   pinMode(DIR_PIN, OUTPUT);
   pinMode(DIR_PIN2, OUTPUT);
   pinMode(PWM_PIN, OUTPUT);
-  
 
   sensor.init();
   //turn the PID on
-  myQuickPID.SetMode(QuickPID::AUTOMATIC);
+  velocityPID.SetMode(QuickPID::AUTOMATIC);
 
   digitalWrite(DIR_PIN, LOW);
   digitalWrite(DIR_PIN2, HIGH);
-}
-
-
-void setDirection(int direction){
-  if (direction == currentDirection) return;
-  if ((direction != NOT_SET) && (currentDirection != direction)) {
-    // ramp down
-  }
-  
-  if (direction == CW) {
-    currentDirection = CW;
-    digitalWrite(DIR_PIN, LOW);
-    digitalWrite(DIR_PIN2, HIGH);
-  } else {
-    currentDirection = CCW;
-    digitalWrite(DIR_PIN, HIGH);
-    digitalWrite(DIR_PIN2, LOW);
-  }
 }
 
 struct testEvent {
@@ -110,8 +65,7 @@ void setTarget(float speed) {
     plannedDirection = CCW;
   } else {
     plannedDirection = CW;
-  }
-  
+  }  
   plannedSpeed = fabs(speed);  
 }
 
@@ -131,13 +85,10 @@ testEvent events[] = {
 
 int eventCount = sizeof(events) / sizeof(testEvent);
 
-
-// Do a little test jig: accel up down and reversal in infinite loop and csv output...
-
 int currentEvent = -1;
 long nextEventTime;
 
-// stall check for end switches and broken/fallen off sensor
+// TODO: stall check for end switches and broken/fallen off sensor
 
 void runTest(){
   if ((currentEvent == -1) || (currentEvent == eventCount)) {
@@ -153,20 +104,18 @@ void runTest(){
   }
 }
 
-// TODO: direction nach unten durchdrücken, +-speed obenrum, PID nur +
-
 // mavlink erst mal über softserial?
 // nicht servo sondern speed aus mavlink lesen?
 
 
-String inputString = "";         // Eine String-Variable, um die empfangenen Daten zu speichern
+String inputString = "";         
 bool stringComplete = false;  
 
 void loop()
 {  
   sensor.update();
   Input = fabs(sensor.getVelocity());
-  myQuickPID.Compute();
+  velocityPID.Compute();
 
   Output = constrain(commandedSpeed, 0, 255);
   if (Output < 128) Output = 0;
@@ -174,7 +123,7 @@ void loop()
   analogWrite(PWM_PIN, Output);
 
   // update controller state
-  // do we need to reverse direction
+  // do we need to reverse direction?
   if (plannedDirection != currentDirection) {
     commandedSpeed -= 30;
   } else {
@@ -183,6 +132,7 @@ void loop()
   commandedSpeed = constrain(commandedSpeed, 0, 400);
   if (commandedSpeed < 200) commandedSpeed = 0;
 
+  // dont just slam it in reverse, let it slow down a bit first...
   if ((plannedDirection != currentDirection) && Input < 100) {
     if (plannedDirection == CW) {
       digitalWrite(DIR_PIN, LOW);
@@ -201,29 +151,20 @@ void loop()
   }
   if (testrun == true) runTest();
 
-  
-  
-  while (Serial.available()) {
-    // Liest Zeichen, bis ein Zeilenumbruch '\n' gefunden wird
+  while (Serial.available()) {    
     char inChar = Serial.read();
-    inputString += inChar; // Fügt das Zeichen zum String hinzu
+    inputString += inChar; 
 
-    if (inChar == '\n') { // Wenn das Zeichen ein Zeilenumbruch ist...
+    if (inChar == '\n') {
       stringComplete = true;
-      break; // Verlässt die Schleife
+      break; 
     }
   }
 
   if (stringComplete) {
-    Serial.print("Empfangen: ");
-    Serial.println(inputString);
     float value = inputString.toFloat();   
     setTarget(value);    
-    // Hier kann die 'inputString' verarbeitet werden
-    inputString = ""; // String für die nächste Eingabe leeren
-    stringComplete = false; // Flag zurücksetzen
+    inputString = ""; 
+    stringComplete = false; 
   }  
-
-  // do interrupt based timing
-  
 }
