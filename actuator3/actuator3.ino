@@ -17,7 +17,7 @@ float currentPositionMM = 0.0f; // [mm]
 
 // ------------------------- SERIAL DEBUGGING -------------------------
 long lastSerial = millis();
-const int serialPeriod = 1000;
+const int serialPeriod = 100;
 
 // Conversion: 0.24 mm per full 360° turn
 const float MM_PER_TURN = 0.24f;
@@ -26,7 +26,7 @@ const float MM_PER_TURN = 0.24f;
 float Input, Output;
 
 //Specify the links and initial tuning parameters
-float Kp = 0.2, Ki = 0.1, Kd = 0;
+float Kp = 2.8, Ki = 0.5, Kd = 0.00;
 
 bool testrun = true;
 
@@ -36,7 +36,7 @@ float plannedSpeed = 0;
 int plannedDirection = CW;
 int currentDirection = CW;
 
-
+// P on measurement?
 QuickPID velocityPID(&Input, &Output, &commandedSpeed, Kp, Ki, Kd, QuickPID::DIRECT);
 
 void setup()
@@ -49,6 +49,7 @@ void setup()
   sensor.init();
   //turn the PID on
   velocityPID.SetMode(QuickPID::AUTOMATIC);
+  velocityPID.SetSampleTimeUs(100000); // Default is 100000 µs / 10ms.
 
   digitalWrite(DIR_PIN, LOW);
   digitalWrite(DIR_PIN2, HIGH);
@@ -104,20 +105,26 @@ void runTest(){
   }
 }
 
+void printFloat(float value, int width, int decimals) {
+  char buf[20];
+  dtostrf(value, width, decimals, buf);
+  Serial.print(buf);
+}
+
 // mavlink erst mal über softserial?
 // nicht servo sondern speed aus mavlink lesen?
 
 
 String inputString = "";         
 bool stringComplete = false;  
-
+float v[5];
 void loop()
 {  
   sensor.update();
   Input = fabs(sensor.getVelocity());
   velocityPID.Compute();
 
-  Output = constrain(commandedSpeed, 0, 255);
+  //Output = constrain(commandedSpeed, 0, 255);
   if (Output < 128) Output = 0;
 
   analogWrite(PWM_PIN, Output);
@@ -142,14 +149,89 @@ void loop()
       digitalWrite(DIR_PIN2, LOW);
     }
     currentDirection = plannedDirection;
+    //velocityPID.
   }
   
 
   if (lastSerial + serialPeriod < millis()) {
-    Serial.println("Commanded " + String(commandedSpeed)+ " Planned " + String(plannedSpeed) + " Direction " + String(currentDirection) + " Input " + String(Input) + " Output " + String(Output));
+    //Serial.println("Commanded " + String(commandedSpeed)+ " Planned " + String(plannedSpeed) + " Direction " + String(currentDirection) + " Input " + String(Input) + " Output " + String(Output));
+
+    // convert direction to speed neg/pos
+    //Serial.print(String(millis()) + ";" + String(commandedSpeed * currentDirection)+ ";" + String(plannedSpeed * currentDirection) + ";" + String(Input) + ";" + String(Output));
+    //Serial.println(";" + String(velocityPID.GetPterm())+ ";" + String(velocityPID.GetIterm()) + ";" + String(velocityPID.GetDterm()));
+
+    Serial.print( String(commandedSpeed * currentDirection)+ "," + String(plannedSpeed * currentDirection) + "," + String(Input) + "," + String(Output));
+    Serial.println("," + String(velocityPID.GetPterm())+ "," + String(velocityPID.GetIterm()) + "," + String(velocityPID.GetDterm()));
+   
+    /*Serial.print(millis());
+    Serial.print(" ; ");
+    
+    printFloat(commandedSpeed * currentDirection, 6, 2);
+    Serial.print(" ; ");
+    
+    printFloat(plannedSpeed * currentDirection, 6, 2);
+    Serial.print(" ; ");
+    
+    printFloat(Input, 6, 2);
+    Serial.print(" ; ");
+    
+    printFloat(Output, 6, 2);
+    Serial.print(" ; ");
+    
+    printFloat(velocityPID.GetPterm(), 6, 2);
+    Serial.print(" ; ");
+    
+    printFloat(velocityPID.GetIterm(), 6, 2);
+    Serial.print(" ; ");
+    
+    printFloat(velocityPID.GetDterm(), 6, 2);
+    
+    Serial.println();*/
+    
     lastSerial = millis();
   }
   if (testrun == true) runTest();
+  
+  if (Serial.available()) {
+    char buf[64];
+    int n = Serial.readBytesUntil('\n', buf, sizeof(buf) - 1);
+    buf[n] = '\0';
+
+    char *tok = strtok(buf, ",");
+    int i = 0;
+
+    while (tok && i < 5) {
+      v[i++] = atof(tok);
+      tok = strtok(NULL, ",");
+    }
+
+    if (i == 5) {
+      velocityPID.SetTunings(v[0], v[1], v[2], v[3], v[4]);
+      //Serial.println("read tunings " + String(v[0]));
+    }
+
+    
+    
+    //int ret = sscanf(str,c, "%f;%f;%f;%f;%f", &serialKp, &serialKi, &serialKd, &serialPon, &serialDon);
+    //Serial.println("read tunings "+ String(ret)+"    "+ String(serialKp));
+
+    /*if (ret == 5) {
+      velocityPID.SetTunings(serialKp, serialKi, serialKd, serialPon, serialDon);
+    }*/
+  }
+
+  /*Serial.print(sliders[0]); Serial.print(",");
+  Serial.print(sliders[1]); Serial.print(",");
+  Serial.print(sliders[2]); Serial.print(",");
+  Serial.print(sliders[3]); Serial.print(",");
+  Serial.print(sliders[4]); Serial.print(",");
+  Serial.print(sin(millis() * 0.001)); Serial.print(",");
+  Serial.println(cos(millis() * 0.001));*/
+
+
+
+
+/*
 
   while (Serial.available()) {    
     char inChar = Serial.read();
@@ -166,5 +248,5 @@ void loop()
     setTarget(value);    
     inputString = ""; 
     stringComplete = false; 
-  }  
+  }  */
 }
