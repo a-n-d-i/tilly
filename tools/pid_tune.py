@@ -12,8 +12,8 @@ ser = serial.Serial(PORT, BAUD, timeout=1)
 # ---------- DATA CONFIG ----------
 WINDOW = 200
 
-data_top = [deque(maxlen=WINDOW) for _ in range(4)]
-data_bottom = [deque(maxlen=WINDOW) for _ in range(3)]
+data_speed = [deque(maxlen=WINDOW) for _ in range(4)]
+data_pid = [deque(maxlen=WINDOW) for _ in range(3)]
 
 labels_top = ["CommandedSpeed", "Planned", "Input", "Output"]
 labels_bottom = ["Pterm", "Iterm", "Dterm"]
@@ -26,37 +26,40 @@ gs = fig.add_gridspec(
     height_ratios=[3, 3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.2]
 )
 
-ax_top = fig.add_subplot(gs[0])
-ax_bottom = fig.add_subplot(gs[1])
+ax_speed = fig.add_subplot(gs[0])
+ax_pid = fig.add_subplot(gs[1])
 
 slider_axes = [
     fig.add_subplot(gs[i]) for i in range(2, 7)
 ]
 
 # ---------- PLOTS ----------
-lines_top = [
-    ax_top.plot([], [], label=labels_top[i])[0]
+lines_speed = [
+    ax_speed.plot([], [], label=labels_top[i])[0]
     for i in range(4)
 ]
 
-lines_bottom = [
-    ax_bottom.plot([], [], label=labels_bottom[i])[0]
+lines_pid = [
+    ax_pid.plot([], [], label=labels_bottom[i])[0]
     for i in range(3)
 ]
 
-for ax in (ax_top, ax_bottom):
-    ax.set_xlim(0, WINDOW)
-    ax.set_ylim(-1550, 1500)     # <<< updated range
-    ax.grid(True)
-    ax.legend(loc="upper left")
 
+ax_speed.set_xlim(0, WINDOW)
+ax_speed.set_ylim(-500, 500)     # <<< updated range
+ax_speed.grid(True)
+ax_speed.legend(loc="upper left")
 
+ax_pid.set_xlim(0, WINDOW)
+ax_pid.set_ylim(-1550, 1500)     # <<< updated range
+ax_pid.grid(True)
+ax_pid.legend(loc="upper left")
 
 
 # ---------- SLIDERS ----------
 sliders = []
 labels = [ "Kp", "Ki", "Kd", "Pon", "Don" ]
-valmaxs = [ 10.0, 10.0, 10.0, 1, 1 ]
+valmaxs = [ 3.0, 3.0, 3.0, 1, 1 ]
 
 for i, ax in enumerate(slider_axes):
     s = Slider(
@@ -83,25 +86,25 @@ def update(frame):
     line = ser.readline().decode("utf-8").strip()
     print(line)
     if not line:
-        return lines_top + lines_bottom
+        return lines_speed + lines_pid
 
     try:
         values = [float(v) for v in line.split(",")]
         if len(values) != 7:
-            return lines_top + lines_bottom
+            return lines_speed + lines_pid
 
         for i in range(4):
-            data_top[i].append(values[i])
-            lines_top[i].set_data(range(len(data_top[i])), data_top[i])
+            data_speed[i].append(values[i])
+            lines_speed[i].set_data(range(len(data_speed[i])), data_speed[i])
 
         for i in range(3):
-            data_bottom[i].append(values[i + 4])
-            lines_bottom[i].set_data(range(len(data_bottom[i])), data_bottom[i])
+            data_pid[i].append(values[i + 4])
+            lines_pid[i].set_data(range(len(data_pid[i])), data_pid[i])
 
     except ValueError:
         pass
 
-    return lines_top + lines_bottom
+    return lines_speed + lines_pid
 
 ani = animation.FuncAnimation(
     fig,

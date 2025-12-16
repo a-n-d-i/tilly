@@ -26,8 +26,7 @@ const float MM_PER_TURN = 0.24f;
 float Input, Output;
 
 //Specify the links and initial tuning parameters
-float Kp = 2.8, Ki = 0.5, Kd = 0.00;
-
+float Kp = 0.6, Ki = 0.0, Kd = 0.00, Pon = 0.5, Don = 0.0;
 bool testrun = true;
 
 // controller state
@@ -37,7 +36,7 @@ int plannedDirection = CW;
 int currentDirection = CW;
 
 // P on measurement?
-QuickPID velocityPID(&Input, &Output, &commandedSpeed, Kp, Ki, Kd, QuickPID::DIRECT);
+QuickPID velocityPID(&Input, &Output, &commandedSpeed, Kp, Ki, Kd, Pon, Don, QuickPID::DIRECT);
 
 void setup()
 {
@@ -50,9 +49,13 @@ void setup()
   //turn the PID on
   velocityPID.SetMode(QuickPID::AUTOMATIC);
   velocityPID.SetSampleTimeUs(100000); // Default is 100000 µs / 10ms.
+  velocityPID.SetControllerDirection(QuickPID::DIRECT);
+  velocityPID.SetOutputLimits(-255, 255);
 
   digitalWrite(DIR_PIN, LOW);
   digitalWrite(DIR_PIN2, HIGH);
+
+
 }
 
 struct testEvent {
@@ -61,6 +64,7 @@ struct testEvent {
   
 };
 
+/*
 void setTarget(float speed) {
   if (speed < 0) {
     plannedDirection = CCW;
@@ -68,9 +72,26 @@ void setTarget(float speed) {
     plannedDirection = CW;
   }  
   plannedSpeed = fabs(speed);  
+}*/
+
+
+void setTarget(float speed) {   
+  if (speed > 0) {
+    digitalWrite(DIR_PIN, LOW);
+    digitalWrite(DIR_PIN2, HIGH);
+    currentDirection = CW;
+    velocityPID.SetControllerDirection(QuickPID::DIRECT);
+    
+  } else {
+    digitalWrite(DIR_PIN, HIGH);
+    digitalWrite(DIR_PIN2, LOW);
+    currentDirection = CCW;
+    velocityPID.SetControllerDirection(QuickPID::REVERSE);
+  }    
+  commandedSpeed = fabs(speed);
 }
 
-
+/*
 testEvent events[] = {
   {2000, 400},
   {1000, 0},
@@ -83,6 +104,16 @@ testEvent events[] = {
   {1000, -300},
   {1000, 0}
  };
+*/
+
+
+testEvent events[] = {
+  {2000, 600},
+  {1000, 0},
+  {2000, -600},
+  {1000, 0}
+ };
+
 
 int eventCount = sizeof(events) / sizeof(testEvent);
 
@@ -118,39 +149,34 @@ void printFloat(float value, int width, int decimals) {
 String inputString = "";         
 bool stringComplete = false;  
 float v[5];
+LowPassFilter filter = LowPassFilter(0.050); // Tf = 1ms
+
 void loop()
 {  
   sensor.update();
-  Input = fabs(sensor.getVelocity());
+  //Input = filter(fabs(sensor.getVelocity()));
+  Input = filter(sensor.getVelocity());
   velocityPID.Compute();
 
   //Output = constrain(commandedSpeed, 0, 255);
-  if (Output < 128) Output = 0;
+  //if (Output < 128) Output = 0;
 
   analogWrite(PWM_PIN, Output);
 
   // update controller state
   // do we need to reverse direction?
-  if (plannedDirection != currentDirection) {
+ 
+  /*if (plannedDirection != currentDirection) {
     commandedSpeed -= 30;
   } else {
     commandedSpeed = plannedSpeed;
-  }
-  commandedSpeed = constrain(commandedSpeed, 0, 400);
-  if (commandedSpeed < 200) commandedSpeed = 0;
+  }*/
+    commandedSpeed = plannedSpeed;
+  //commandedSpeed = constrain(commandedSpeed, 0, 600);
+  //if (commandedSpeed < 200) commandedSpeed = 0;
 
   // dont just slam it in reverse, let it slow down a bit first...
-  if ((plannedDirection != currentDirection) && Input < 100) {
-    if (plannedDirection == CW) {
-      digitalWrite(DIR_PIN, LOW);
-      digitalWrite(DIR_PIN2, HIGH);
-    } else {
-      digitalWrite(DIR_PIN, HIGH);
-      digitalWrite(DIR_PIN2, LOW);
-    }
-    currentDirection = plannedDirection;
-    //velocityPID.
-  }
+
   
 
   if (lastSerial + serialPeriod < millis()) {
@@ -207,46 +233,6 @@ void loop()
 
     if (i == 5) {
       velocityPID.SetTunings(v[0], v[1], v[2], v[3], v[4]);
-      //Serial.println("read tunings " + String(v[0]));
-    }
-
-    
-    
-    //int ret = sscanf(str,c, "%f;%f;%f;%f;%f", &serialKp, &serialKi, &serialKd, &serialPon, &serialDon);
-    //Serial.println("read tunings "+ String(ret)+"    "+ String(serialKp));
-
-    /*if (ret == 5) {
-      velocityPID.SetTunings(serialKp, serialKi, serialKd, serialPon, serialDon);
-    }*/
-  }
-
-  /*Serial.print(sliders[0]); Serial.print(",");
-  Serial.print(sliders[1]); Serial.print(",");
-  Serial.print(sliders[2]); Serial.print(",");
-  Serial.print(sliders[3]); Serial.print(",");
-  Serial.print(sliders[4]); Serial.print(",");
-  Serial.print(sin(millis() * 0.001)); Serial.print(",");
-  Serial.println(cos(millis() * 0.001));*/
-
-
-
-
-/*
-
-  while (Serial.available()) {    
-    char inChar = Serial.read();
-    inputString += inChar; 
-
-    if (inChar == '\n') {
-      stringComplete = true;
-      break; 
     }
   }
-
-  if (stringComplete) {
-    float value = inputString.toFloat();   
-    setTarget(value);    
-    inputString = ""; 
-    stringComplete = false; 
-  }  */
 }
