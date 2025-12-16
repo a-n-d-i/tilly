@@ -1,6 +1,28 @@
+/*
+ * Since we're tyring to get the most of cheap and slow controllers, this one follows the "race driver" approach. 
+ * Dunno if this is a thing and/or already has a name, I made it up on the spot but don't believe I'm the first one who came up with this.
+ * 
+ * The "race driver" approach on breaking: We remember the distance to the corner and slam
+ * the brakes, there's no feedback control loop for breaking itself. We might make it self learning though...
+ * Parameter: breakDistance, unit rad
+ * If this leads to too much banging, this should be switched to rampdown.
+ * 
+ * Acceleration follows the same approach, just with an adjustable ramp up which should simulate the motors acceleration. Adjust it by ear, 
+ * you don't want banging an shaking, just a smooth rise in pitch. Parameters: rampSize (amount that is added to PWM per step) rampDuration (ms between additions)
+ * 
+ * Theory: This Algorith has almost no feedback. Only on direct reversals, we look at the actual velocity. 
+ * We might switch that to self learning as well...
+ * 
+ * So we're pretty much going open loop..
+ * 
+ */
+
+
 #include "SimpleFOC.h"
 
 MagneticSensorI2C sensor = MagneticSensorI2C(AS5600_I2C);
+
+// TODO: Switch between brake and ramp down
 
 const int PWM_PIN  = 3;   // PWM output
 const int DIR1  = 5;   // direction
@@ -23,10 +45,11 @@ const int serialPeriod = 100;
 // go forward 2 sec
 // go backward 2 sec
 
+// Backwards sucks the ram in, Forward pushes it out.
+
 enum state_t {FORWARD, FORWARD_RAMP_UP, BACKWARD, BACKWARD_RAMP_UP, BRAKE, STOPPED};
 
 state_t currentState = STOPPED;
-
 
 state_t nextDirection = STOPPED;
 
@@ -86,14 +109,15 @@ void rampUp(){
 
 
 void loop() {
+      sensor.update();
 
-  //Serial.println("akkk "+String(currentState));
 
 switch (currentState) {
+
     case STOPPED:
       if (nextDirection == FORWARD) currentState = FORWARD_RAMP_UP;
       if (nextDirection == BACKWARD) currentState = BACKWARD_RAMP_UP;
-      Serial.println("STOPPED");
+      //Serial.println("STOPPED");
 
       break;
 
@@ -149,8 +173,8 @@ switch (currentState) {
 
   analogWrite(PWM_PIN, outputPWM);
   
-  if (lastSerial + serialPeriod < millis()) {
-    Serial.println(String(millis()) + ";" + String(currentState) + ";" + String(outputPWM));
+  if (lastSerial + serialPeriod < millis()) { 
+    Serial.println(String(outputPWM) + ";" + String(sensor.getVelocity()) + ";" + String(sensor.getAngle())+ ";" + String(rampSize) + ";" + String(rampDelay) + ";" + String(minVelocity));
     lastSerial = millis();
   }
 
