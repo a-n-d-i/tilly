@@ -15,6 +15,8 @@
  * 
  * So we're pretty much going open loop..
  * 
+ * TODO: Measure how long it takes to ramp up/down with velocity
+ * 
  */
 
 
@@ -26,13 +28,15 @@ MagneticSensorI2C sensor = MagneticSensorI2C(AS5600_I2C);
 
 const int PWM_PIN  = 3;   // PWM output
 const int DIR1  = 5;   // direction
-const int DIR2 = 6;   // second direction pin (or LOW if driver only needs 1)
+const int DIR2 = 6;   // second direction pin 
 
 int rampSize = 10;
 int rampDelay = 30;
 
 int curentRamp = 0;
 unsigned long lastRampTime = 0;
+
+unsigned long lastVelocityTime = 0;
 
 int minVelocity = 20; // rads / s 
 int minPWM = 100;
@@ -47,7 +51,7 @@ const int serialPeriod = 100;
 
 // Backwards sucks the ram in, Forward pushes it out.
 
-enum state_t {FORWARD, FORWARD_RAMP_UP, BACKWARD, BACKWARD_RAMP_UP, BRAKE, STOPPED};
+enum state_t {FORWARD, FORWARD_RAMP_UP, BACKWARD, BACKWARD_RAMP_UP, BRAKE, STOPPED, HOMING};
 
 state_t currentState = STOPPED;
 
@@ -84,6 +88,36 @@ void runTest(){
   }   
 }
 
+bool homing = false;
+bool homed = false;
+int sensorOffset = 0;
+
+void homeActuator() {
+  
+  if (homing == false) {
+    nextDirection = BACKWARD;
+    homing = true;
+    Serial.println("Homing");
+  }
+  
+  if ((millis() - lastVelocityTime > 500) && (fabs(sensor.getVelocity()) < 100)) {
+     // We're home, set offset
+     // resets the turn counter, hopefully without sideeffects
+     //sensor.init();
+     // seems there is no way to set the acutal rotatinal offset
+     sensorOffset = sensor.getAngle();
+     Serial.println("Homed, Sensor offset " + String(sensorOffset));
+     homing = false;
+     homed = true;          
+     currentState = BRAKE;
+  }  
+}
+
+int currentPosition(){
+  // convert radiants to mm
+  return (sensor.getAngle() - sensorOffset) / ( 2 * 3.14) * 0.24;
+  // 
+}
 
 
 void setup() {
@@ -107,17 +141,39 @@ void rampUp(){
   }
 }
 
+int targetPosition = 42;
+
 
 void loop() {
-      sensor.update();
+  sensor.update();
+  
+  if (fabs(sensor.getVelocity()) > 100) lastVelocityTime = millis();
+  
+  if (homed == false) {
+    homeActuator();
+  } else {
+    // determine if we're there-ish
+    if (fabs(currentPosition() - targetPosition) < 3) {
+      // stop
+      currentState = BRAKE;
+    } else {
+      // determine if / where to go
+      //Serial.println("go places");
+      if (targetPosition > currentPosition()) {
+        nextDirection = FORWARD;
+      } else {
+        nextDirection = BACKWARD;
+      }
+    }
+  }
+  
+  switch (currentState) {
 
-
-switch (currentState) {
-
+ 
     case STOPPED:
       if (nextDirection == FORWARD) currentState = FORWARD_RAMP_UP;
       if (nextDirection == BACKWARD) currentState = BACKWARD_RAMP_UP;
-      //Serial.println("STOPPED");
+      Serial.println("STOPPED");
 
       break;
 
@@ -164,20 +220,24 @@ switch (currentState) {
      //Serial.println("BRAKE");
 
       break;
+    case HOMING: 
+
+      
       default:
       Serial.println("dafuq");
   }
 
   // read command from serial
-  runTest();
+  //if (homed == true) runTest();
 
   analogWrite(PWM_PIN, outputPWM);
   
   if (lastSerial + serialPeriod < millis()) { 
-    Serial.println(String(outputPWM) + ";" + String(sensor.getVelocity()) + ";" + String(sensor.getAngle())+ ";" + String(rampSize) + ";" + String(rampDelay) + ";" + String(minVelocity));
+    Serial.println(String(outputPWM) + ";" + String(sensor.getVelocity()) + ";" + String(currentPosition())+ ";" + String(rampSize) + ";" + String(rampDelay) + ";" + String(minVelocity));
     lastSerial = millis();
   }
 
   // check commanded position, slam the brake if nearby
+  
 
 }
