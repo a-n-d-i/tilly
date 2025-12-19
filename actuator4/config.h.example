@@ -1,0 +1,20 @@
+/*
+ * WiFi and Network Configuration
+ * 
+ * Instructions:
+ * 1. Copy this file and rename it to "config.h"
+ * 2. Update the values below with your WiFi credentials and network settings
+ * 3. Place config.h in the same folder as your main .ino sketch
+ * 4. Add config.h to your .gitignore if using version control
+ */
+
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// ===== WiFi Configuration =====
+const char* ssid = "";           // Your WiFi network name
+const char* password = "";   // Your WiFi password
+
+const int udpPort = 14550;                 // Standard MAVLink UDP port (usually 14550 or 14551)
+
+#endif // CONFIG_H
