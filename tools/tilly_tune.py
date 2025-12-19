@@ -6,7 +6,7 @@ from collections import deque
 
 # TODO: Make this universial, treat everything as float and just configure name, min, max.
 # ---------- SERIAL CONFIG ----------
-PORT = '/dev/ttyUSB0'
+PORT = '/dev/ttyUSB2'
 BAUD = 115200
 ser = serial.Serial(PORT, BAUD, timeout=1)
 
@@ -17,7 +17,7 @@ data_speed = [deque(maxlen=WINDOW) for _ in range(2)]
 data_pid = [deque(maxlen=WINDOW) for _ in range(1)]
 
 labels_top = ["PWM", "Velocity"]
-labels_bottom = ["Position (rad)"]
+labels_bottom = ["Position (mm)"]
 
 # ---------- FIGURE LAYOUT ----------
 fig = plt.figure(figsize=(10, 8))
@@ -52,7 +52,7 @@ ax_speed.grid(True)
 ax_speed.legend(loc="upper left")
 
 ax_pid.set_xlim(0, WINDOW)
-ax_pid.set_ylim(-1550, 1500)     # <<< updated range
+ax_pid.set_ylim(0, 500)     # <<< updated range
 ax_pid.grid(True)
 ax_pid.legend(loc="upper left")
 
