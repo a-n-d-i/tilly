@@ -4,14 +4,27 @@ import matplotlib.animation as animation
 from matplotlib.widgets import Slider
 from collections import deque
 
+import socket
+
 # TODO: Make this universial, treat everything as float and just configure name, min, max.
 # ---------- SERIAL CONFIG ----------
-PORT = '/dev/ttyUSB2'
-BAUD = 115200
-ser = serial.Serial(PORT, BAUD, timeout=1)
+
 
 # ---------- DATA CONFIG ----------
 WINDOW = 200
+
+
+UDP_PORT = 42424
+BUFFER_SIZE = 1024
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+# Allow broadcast reception
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+
+# Bind to all interfaces on the target port
+sock.bind(("", UDP_PORT))
+
 
 data_speed = [deque(maxlen=WINDOW) for _ in range(2)]
 data_pid = [deque(maxlen=WINDOW) for _ in range(1)]
@@ -76,7 +89,7 @@ for i, ax in enumerate(slider_axes):
 def send_sliders(val=None):
     values = [s.val for s in sliders]
     msg = ",".join(f"{v:.3f}" for v in values) + "\n"
-    ser.write(msg.encode("utf-8"))
+    #ser.write(msg.encode("utf-8"))
     #print("Sending "+msg)
 
 for s in sliders:
@@ -84,10 +97,14 @@ for s in sliders:
 
 # ---------- ANIMATION ----------
 def update(frame):
-    line = ser.readline().decode("utf-8").strip()
-    print(line)
-    if not line:
+    #line = ser.readline().decode("utf-8").strip()
+    data, addr = sock.recvfrom(BUFFER_SIZE)
+    print(data)
+
+    if not data:
         return lines_speed + lines_pid
+
+    line = data.decode("utf-8").strip()
 
     try:
         values = [float(v) for v in line.split(";")]
@@ -116,4 +133,4 @@ ani = animation.FuncAnimation(
 
 plt.tight_layout()
 plt.show()
-ser.close()
+#ser.close()
