@@ -128,6 +128,7 @@ void runTest(){
     nextEventTime = millis() + events[currentEvent].startTimeOffset;
   }
   
+  // dafuq? ist das mein fehler?
   setTarget(events[currentEvent].targetSpeed);
 
   if (nextEventTime <= millis()) {

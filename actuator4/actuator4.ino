@@ -316,7 +316,7 @@ void loop() {
     homeActuator();
   } else {
     // determine if we're there-ish
-    if ((targetPosition - currentPosition()) < 3) {
+    if (fabs(targetPosition - currentPosition()) < 3) {
       if (fabs(sensor.getVelocity()) < minVelocity) {
         currentState = STOPPED;
         nextDirection = STOPPED;     
@@ -415,7 +415,8 @@ void loop() {
     //Serial.println(String(outputPWM) + ";" + String(sensor.getVelocity()) + ";" + String(currentPosition())+ ";" + String(rampSize) + ";" + String(rampDelay) + ";" + String(minVelocity));
     //logThis(String(outputPWM) + ";" + String(sensor.getVelocity()) + ";" + String(currentPosition())+ ";" + String(rampSize) + ";" + String(rampDelay) + ";" + String(minVelocity) + "\n");
 
-    logThis("Target Position: " + String(targetPosition) + " Current Position " + String(currentPosition()) + " State: " + String(currentState) + " Speed " + String(sensor.getVelocity()));  
+    //logThis("Target Position: " + String(targetPosition) + " Current Position " + String(currentPosition()) + " State: " + String(currentState) + " Speed " + String(sensor.getVelocity()));  
+    logThis(String(targetPosition) + ";" + String(currentPosition()) + ";" + String(currentState) + ";" + String(sensor.getVelocity()) +";" + String(outputPWM)  );  
     
     lastSerial = millis();
   }

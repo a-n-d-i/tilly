@@ -67,6 +67,8 @@ param_sliders = {}
 mavlink_master = None
 last_sensor_time = time.time()
 
+current_servo_raw_value = None
+
 # ============================================================================
 # GUI SETUP
 # ============================================================================
@@ -129,6 +131,9 @@ def mavlink_thread_func():
                 for param_name in PARAM_NAMES:
                     mavlink_master.param_fetch_one(param_name)
 
+                    #type = m.get_type()
+                    #if type.startswith("ACC"):
+
             msg = mavlink_master.recv_msg()
             if msg and (msg.msgname == "PARAM_VALUE"):
                 # Handle both bytes and string param_id
@@ -143,14 +148,12 @@ def mavlink_thread_func():
                     # Update slider if it exists
                     if param_id in param_sliders:
                         param_sliders[param_id].set_val(msg.param_value)
-                    print(f"Updated {param_id}: {msg.param_value}")
+                    #print(f"Updated {param_id}: {msg.param_value}")
             elif msg and msg.msgname == "SERVO_OUTPUT_RAW":
                 # Normalize servo output to 0-150
                 servo_normalized = (msg.servo1_raw - 1000) / 1000.0 * 150
-                sensor_data['servo_raw'].append(servo_normalized)
-                print("received servo outout")
-                #if len(sensor_data['time']) > 0:
-                #    sensor_data['time'][-1] = current_time
+                current_servo_raw_value = servo_normalized
+                #sensor_data['time'].append( time.time())
 
 
             # check if slider values changed. if so, update parameter
@@ -179,10 +182,19 @@ def send_parameter(param_name, value):
 def udp_sensor_thread_func():
     """Receive sensor data from UDP"""
     global last_sensor_time
+    global current_servo_raw_value
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((UDP_SENSOR_HOST, UDP_SENSOR_PORT))
+    client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) # UDP
+    client.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+
+    # Enable broadcasting mode
+    client.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+
+    client.bind(("", UDP_SENSOR_PORT))
+
+    #sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    #sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    #sock.bind((UDP_SENSOR_HOST, UDP_SENSOR_PORT))
     print(f"UDP sensor listener started on {UDP_SENSOR_HOST}:{UDP_SENSOR_PORT}")
 
     start_time = time.time()
@@ -190,7 +202,7 @@ def udp_sensor_thread_func():
     try:
         while True:
             try:
-                data, _ = sock.recvfrom(4096)
+                data, _ = client.recvfrom(4096)
                 current_time = time.time() - start_time
 
                 # Parse CSV: Target Position;Current Position;State;Speed;OutputPWM
@@ -210,6 +222,7 @@ def udp_sensor_thread_func():
                     sensor_data['state'].append(state)
                     sensor_data['speed'].append(speed)
                     sensor_data['output_pwm'].append(output_pwm)
+                    sensor_data['servo_raw'].append(current_servo_raw_value)
                     last_sensor_time = current_time
 
             except (ValueError, IndexError) as e:
@@ -219,25 +232,7 @@ def udp_sensor_thread_func():
     except Exception as e:
         print(f"UDP error: {e}")
     finally:
-        sock.close()
-
-
-def compute_fft_servo(servo_signal, fs=SAMPLING_RATE):
-    """Compute FFT of servo signal in 0.1-4 Hz range"""
-    if len(servo_signal) < 32:
-        return np.array([]), np.array([])
-
-    signal_array = np.array(servo_signal)
-    signal_detrended = signal_array - np.mean(signal_array)
-    window = np.hanning(len(signal_detrended))
-    signal_windowed = signal_detrended * window
-
-    fft_mag = np.abs(np.fft.rfft(signal_windowed))
-    freq = np.fft.rfftfreq(len(signal_windowed), 1.0 / fs)
-
-    # Filter to 0.1-4 Hz range
-    mask = (freq >= 0.1) & (freq <= 4.0)
-    return freq[mask], fft_mag[mask]
+        client.close()
 
 
 def update_animation(frame):
@@ -245,7 +240,10 @@ def update_animation(frame):
     if len(sensor_data['time']) < 2:
         return
 
-    time_window = slider_time.val
+    print(sensor_data)
+
+    time_window = 30
+    #slider_time.val)
     current_time = sensor_data['time'][-1] if sensor_data['time'] else 0
 
     # Filter data within time window
@@ -265,41 +263,6 @@ def update_animation(frame):
     line_servo.set_data(times, servo_raw)
 
     ax_timeseries.set_xlim(times.min(), times.max())
-
-    # Update FFT plot
-    freq, fft_mag = compute_fft_servo(servo_raw)
-    if len(freq) > 0:
-        line_fft.set_data(freq, fft_mag)
-        ax_fft.set_ylim(0, fft_mag.max() * 1.2 if fft_mag.max() > 0 else 1)
-
-    # Update statistics
-    if len(servo_raw) > 0:
-        error = current_pos - target_pos
-        stats_text = (
-            f"Parameters:\n"
-            f"{'─' * 28}\n"
-        )
-
-        for param_name in PARAM_NAMES:
-            val = param_values[param_name]
-            stats_text += f"{param_name:<20} {val:8.5f}\n"
-
-        stats_text += f"\n{'─' * 28}\n"
-        stats_text += f"Servo Stats:\n"
-        stats_text += f"  Mean: {np.mean(servo_raw):.2f}\n"
-        stats_text += f"  Std: {np.std(servo_raw):.2f}\n"
-        stats_text += f"  Min/Max: {np.min(servo_raw):.2f} / {np.max(servo_raw):.2f}\n"
-        stats_text += f"\nPosition Error:\n"
-        stats_text += f"  Mean: {np.mean(error):.2f}\n"
-        stats_text += f"  Std: {np.std(error):.2f}\n"
-        stats_text += f"  Max: {np.max(np.abs(error)):.2f}\n"
-        stats_text += f"\nOutput PWM:\n"
-        stats_text += f"  Mean: {np.mean(output_pwm):.1f}\n"
-        stats_text += f"  Range: {np.min(output_pwm):.1f} - {np.max(output_pwm):.1f}\n"
-        stats_text += f"\nSpeed: {speed[-1]:.2f} m/s\n"
-        stats_text += f"Data Points: {len(sensor_data['time'])}\n"
-
-        text_stats.set_text(stats_text)
 
 
 # ============================================================================

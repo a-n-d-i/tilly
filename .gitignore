@@ -3,3 +3,4 @@
 /.venv/
 /.idea/
 /tillerpilot.iml
+/actuator4/config.h
