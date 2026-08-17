@@ -10,6 +10,7 @@
 #define TILLY_DISPLAY
 
 #include "display.c"
+#include "mavlink_nmea_bridge.h"
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
@@ -31,6 +32,7 @@ WiFiUDP udp;
 #define SERIAL_RX 35  // RX2
 #define SERIAL_TX 15  // TX2
 HardwareSerial ArduPilotSerial(2);  // Use UART2
+#define NMEA_UDP_PORT 10110
 
 // ===== Button Configuration =====
 ezButton plus1Button(14, INPUT_PULLUP);
@@ -40,10 +42,8 @@ ezButton minus1Button(27, INPUT_PULLUP);
 ezButton minus10Button(22, INPUT_PULLUP);
 ezButton standbyButton(13, INPUT_PULLUP);
 
-//10.77.71.35/24
-// Stupid Android Hotspot is changing networks but only accepts broadcast to x.x.x.255
-// TODO: Use Wifi IP to generate Broadcast Address
-IPAddress remoteIP(10,77,71,255);   // udp broadcast
+// Broadcast Adress gets calculated automatically
+IPAddress remoteIP;   // udp broadcast
 uint16_t remotePort = 14550;        // destination port
 
 // Display update timer
@@ -83,6 +83,17 @@ bool rc_override_active = false;
 
 bool wifi = false;
 
+
+static void computeBroadcastAddress() {
+  IPAddress ip = WiFi.localIP();
+  IPAddress mask = WiFi.subnetMask();
+  IPAddress bcast;
+  for (int i = 0; i < 4; i++) bcast[i] = ip[i] | (~mask[i] & 0xFF);
+  remoteIP = bcast;
+  Serial.printf("UDP broadcast target: %s:%d\n",
+                remoteIP.toString().c_str(), NMEA_UDP_PORT);
+}
+
 void setup() {
   
   ArduinoOTA
@@ -120,8 +131,8 @@ void setup() {
   
   ArduinoOTA.setHostname("tilly-buttonbox");
   
-  pinMode(TFT_BACKGROUND, OUTPUT);    // sets the digital pin 13 as output
-  analogWrite(5, 200); // 0 -> full brightness/whiteout, 1024 -> off
+  //pinMode(TFT_BACKGROUND, OUTPUT);    // sets the digital pin 13 as output
+  //analogWrite(5, 200); // 0 -> full brightness/whiteout, 1024 -> off
   Serial.begin(115200);
   Serial.println("Tillys little helper");
   
@@ -156,6 +167,7 @@ void setup() {
     Serial.println("\nWiFi connected!");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
+    computeBroadcastAddress();
   
     ArduinoOTA.begin();  // Starts OTA
     
@@ -163,6 +175,9 @@ void setup() {
     udp.begin(udpPort);
     //Serial.printf("UDP listening on port %d\n", udpPort);
   }
+
+  mavNmeaBridge_setup(ArduPilotSerial, udp, remoteIP, NMEA_UDP_PORT);
+
   #ifdef TILLY_DISPLAY
   lower.curText = String(current_heading);
   lower.desText = String(desired_heading);
@@ -171,6 +186,12 @@ void setup() {
   #endif
 
   requestMessageStream(MAVLINK_MSG_ID_GPS_INPUT);
+  requestMessageStream(MAVLINK_MSG_ID_GLOBAL_POSITION_INT);
+  requestMessageStream(MAVLINK_MSG_ID_GPS_RAW_INT);
+  requestMessageStream(MAVLINK_MSG_ID_SYSTEM_TIME);
+  requestMessageStream(MAVLINK_MSG_ID_VFR_HUD);
+  requestMessageStream(MAVLINK_MSG_ID_NAV_CONTROLLER_OUTPUT);
+  
   
   sendArmCommand();
 }
@@ -332,7 +353,7 @@ void loop() {
             uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
             uint16_t len = mavlink_msg_to_send_buffer(buffer, &msg);
 
-            // TODO: decide weather package is for us or someone else?...
+            // TODO: decide whether package is for us or someone else?...
             if (wifi == true) {
               // Send via UDP
               udp.beginPacket(remoteIP, remotePort);
@@ -412,9 +433,13 @@ void loop() {
             }
             fields[GPS].text = "SATS: \n   " + String(gps_status.satellites_visible);              
             
-          }                 
+          }
+          // update the nmea bridge
+          handleMavMessage(msg);                 
           break;
+
         }
+
     }
 
    yield();
@@ -441,6 +466,8 @@ void loop() {
       sendYawCommandDeg(ArduPilotSerial, 1, 1, desired_heading);
       lastMavlinkUpdate = millis();
   }
+
+  mavNmeaBridge_update();
   
   #ifdef TILLY_DISPLAY
   // Update displays
