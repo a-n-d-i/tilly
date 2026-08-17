@@ -40,7 +40,10 @@ ezButton minus1Button(27, INPUT_PULLUP);
 ezButton minus10Button(22, INPUT_PULLUP);
 ezButton standbyButton(13, INPUT_PULLUP);
 
-IPAddress remoteIP(192,168,1,255);   // udp broadcast
+//10.77.71.35/24
+// Stupid Android Hotspot is changing networks but only accepts broadcast to x.x.x.255
+// TODO: Use Wifi IP to generate Broadcast Address
+IPAddress remoteIP(10,77,71,255);   // udp broadcast
 uint16_t remotePort = 14550;        // destination port
 
 // Display update timer
@@ -143,7 +146,7 @@ void setup() {
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
 
-  int wifiTimeout = millis() + 5000;
+  int wifiTimeout = millis() + 30000;
   
   while ((WiFi.status() != WL_CONNECTED) and (millis() < wifiTimeout)){
     delay(500);
@@ -175,6 +178,25 @@ void setup() {
   sendArmCommand();
 }
 
+// Sends a custom "event" as a STATUSTEXT. Text field is max 50 chars (MAVLink2).
+void sendCustomEvent(const char* text, uint8_t severity = MAV_SEVERITY_NOTICE) {
+  mavlink_message_t msg;
+  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+
+  mavlink_msg_statustext_pack(
+    250, 1, &msg,
+    severity,
+    text,
+    0,   // id (MAVLink2 chunking id, 0 = not chunked)
+    0    // chunk_seq
+  );
+
+  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+   ArduPilotSerial.write(buf, len);
+}
+
+
+
 void handleButtons(){
   plus1Button.loop();
   plus10Button.loop();
@@ -205,25 +227,34 @@ void handleButtons(){
       }
        
   } else {
-    
+    char buf[64];
+    // The buttons are mirrored/wrong on the current box
     if(plus1Button.isPressed()){
-      desired_heading += 1;
-      Serial.println("+1 deg");
+      desired_heading -= 1;
+      Serial.println("-1 deg");
+      snprintf(buf, sizeof(buf), "Course -1 deg, Heading +%d", desired_heading);   
+      sendCustomEvent(buf);
     }
   
     if(plus10Button.isPressed()){
-      desired_heading += 10;
-      Serial.println("+10 deg");
+      desired_heading -= 10;
+      Serial.println("-10 deg");
+      snprintf(buf, sizeof(buf), "Course -10 deg, Heading +%d", desired_heading);   
+      sendCustomEvent(buf);
     }
 
     if(minus1Button.isPressed()){
-      desired_heading -= 1;
-      Serial.println("-1 deg");
+      desired_heading += 1;
+      Serial.println("+1 deg");
+      snprintf(buf, sizeof(buf), "Course +1 deg, Heading +%d", desired_heading);   
+      sendCustomEvent(buf);
     }
   
     if(minus10Button.isPressed()){
-      desired_heading -= 10;
-      Serial.println("-10 deg");
+      desired_heading += 10;
+      Serial.println("+10 deg");
+      snprintf(buf, sizeof(buf), "Course +10 deg, Heading +%d", desired_heading);   
+      sendCustomEvent(buf);
     }
 
     if (desired_heading > 359) {
