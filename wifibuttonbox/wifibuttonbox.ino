@@ -54,21 +54,18 @@ unsigned long lastMavlinkUpdate = 0;
 const unsigned long mavlinkUpdateInterval = 1000;
 
 /* 
- *  So, manual steering is a bit of a thing. In the RC world steering is value of
- *  1000-2000 with 1500 being midhsip. This can either control position or speed 
- *  (as in hard left or move the rudder as fast as possible to the left). 
- *  ATM, we have no rudder position sensor, so we use the speed variant.
- *  
- *  So in manual mode, we have to send the ovveride signal for a specified time. 
- *  Like 1250 for 1s to move the arm one "blip" like you would pressing +1 in standby 
- *  mode on an autopilot. 
- *   
- *  So we have an end time for the override which is now + hangtime.
- */
+ *  In the RC world steering is value of
+ *  1000-2000 with 1500 being midhsip. 
+ *  Lets say a small incerement is 3mm, a large one is 10mm. The ram is 250mm atm, so 83 small increments or 25 big increments.
+ *  So each small increment is 12 and each big increment is 40.
+*/
 
-unsigned int rc_ovveride_end = millis();
-const unsigned int rc_overide_hangtime_1 = 500; 
-const unsigned int rc_overide_hangtime_10 = 3000;
+const unsigned int small_increment = 12;
+const unsigned int large_increment = 40;
+
+
+
+unsigned int standby_ram_position = 1500;
 
 // Variables for display data
 int current_heading = 0;
@@ -208,23 +205,26 @@ void handleButtons(){
   if (pilotMode == STANDBY) {
       if(plus1Button.isPressed()){        
         Serial.println("+1 step");
-        sendRcOverride(1200, rc_overide_hangtime_1);
+        standby_ram_position -= small_increment;
       }
 
       if(plus10Button.isPressed()){        
         Serial.println("+10 step");
-        sendRcOverride(1200, rc_overide_hangtime_10);
+        standby_ram_position -= large_increment;
       }
     
       if(minus1Button.isPressed()){
         Serial.println("-1 step");
-        sendRcOverride(1800, rc_overide_hangtime_1);
+        standby_ram_position += small_increment;
       }
     
       if(minus10Button.isPressed()){
         Serial.println("-10 step");
-        sendRcOverride(1800, rc_overide_hangtime_10);
+        standby_ram_position += large_increment;
       }
+      standby_ram_position = constrain(standby_ram_position, 1000, 2000);
+
+      sendRcOverride(standby_ram_position);
        
   } else {
     char buf[64];
@@ -270,6 +270,7 @@ void handleButtons(){
   // bc of the slow display, there's bouncing in the debounce lib. Dirty fix for now. TODO, I guess...
   if(standbyButton.isPressed() && pilotMode == AUTO){
     pilotMode = STANDBY;
+    standby_ram_position = 1500;
     Serial.println("Standby");
     setManualMode();
     #ifdef TILLY_DISPLAY
@@ -462,11 +463,7 @@ void loop() {
   }
   }
   #endif
-  // move the "steering stick" back to center
-  if (rc_override_active == true && rc_ovveride_end < millis()) {
-    sendRcOverride(1500, 0);
-    rc_override_active = false;
-  }
+
 }
 
 
@@ -591,7 +588,7 @@ void requestMessageStream(uint8_t message_number) {
 
 
 
-void sendRcOverride(uint16_t value, unsigned int hangtime) {
+void sendRcOverride(uint16_t value) {
 
     mavlink_message_t msg;
 
@@ -616,8 +613,6 @@ void sendRcOverride(uint16_t value, unsigned int hangtime) {
     uint8_t buf[MAVLINK_MAX_PACKET_LEN];
     uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
     ArduPilotSerial.write(buf, len);
-    rc_ovveride_end = millis() + hangtime;
-    rc_override_active = true;
 }
 
 
