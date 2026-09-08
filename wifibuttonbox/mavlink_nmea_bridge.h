@@ -5,10 +5,14 @@
 // Listens to a MAVLink stream (e.g. Serial2 from Pixhawk/ArduPilot) and
 // re-broadcasts a subset of the data as NMEA0183 sentences over UDP,
 // so any chartplotter / SignalK / OpenCPN instance on the LAN can consume
-// autopilot position, heading, and nav-to-waypoint data.
+// autopilot position and heading data.
 //
-// Excluded on purpose: VHW (needs true water speed, not groundspeed) and
-// XDR (no clean NMEA0183 slot for battery/generic transducer data here).
+// Excluded on purpose:
+//  - VHW (needs true water speed, not groundspeed)
+//  - XDR (no clean NMEA0183 slot for battery/generic transducer data here)
+//  - APB / RMB (nav-to-waypoint) - OpenCPN now generates these itself and
+//    sends them back to the ESP32; see opencpn_bridge.h for that half
+//    (UDP 10111 -> desired_heading -> existing sendYawCommandDeg()).
 //
 // Usage in your existing sketch:
 //
@@ -48,7 +52,7 @@ void mavNmeaBridge_update();
 void mavNmeaBridge_setDeclination(float declinationDeg);
 
 // Optional: change how often each sentence group is sent (default 1000 ms
-// for position/heading, 2000 ms for nav-to-waypoint). Safe to ignore.
-void mavNmeaBridge_setRates(uint32_t positionMs, uint32_t headingMs, uint32_t navMs);
+// for both position and heading). Safe to ignore.
+void mavNmeaBridge_setRates(uint32_t positionMs, uint32_t headingMs);
 
 void handleMavMessage(const mavlink_message_t &msg);

@@ -22,11 +22,9 @@ static float s_declinationDeg = 0.0f;
 
 static uint32_t s_positionRateMs = 1000;
 static uint32_t s_headingRateMs  = 1000;
-static uint32_t s_navRateMs      = 2000;
 
 static uint32_t s_lastPositionSend = 0;
 static uint32_t s_lastHeadingSend  = 0;
-static uint32_t s_lastNavSend      = 0;
 
 // Cached latest values from MAVLink messages
 static bool     s_haveGps      = false;
@@ -40,11 +38,6 @@ static uint64_t s_timeUnixUsec  = 0;     // for RMC/ZDA date+time
 
 static bool     s_haveHeading  = false;
 static float    s_headingMagDeg = 0.0f;  // VFR_HUD.heading
-
-static bool     s_haveNav      = false;
-static float    s_wpDistM      = 0.0f;
-static float    s_targetBearingDeg = 0.0f;
-static float    s_xtrackErrorM = 0.0f;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -63,13 +56,13 @@ static String withChecksum(const String &body) {
 }
 
 static void sendSentence(const String &bodyNoChecksum) {
-  Serial.println("Sendsentence");
+  //Serial.println("Sendsentence");
   if (WiFi.status() != WL_CONNECTED) return;
   String out = withChecksum(bodyNoChecksum);
   s_udp.beginPacket(s_broadcastIP, s_udpPort);
   s_udp.write((const uint8_t *)out.c_str(), out.length());
   s_udp.endPacket();
-  Serial.println("Sent UDP Package");
+  //Serial.println("Sent UDP Package");
 }
 
 // Converts signed decimal degrees to NMEA "ddmm.mmmm"/"dddmm.mmmm" + hemisphere.
@@ -193,43 +186,12 @@ static void sendHDT() {
   sendSentence(s);
 }
 
-static void sendAPB() {
-  if (!s_haveNav) return;
-  // Simplified APB: status flags fixed to "A,A" (no loran-c blink/cycle
-  // warnings), XTE in nautical miles (left/right + steer-to sense),
-  // bearing-to-waypoint true, waypoint ID left blank.
-  float xteNm = fabs(s_xtrackErrorM) / 1852.0f;
-  char steerDir = (s_xtrackErrorM < 0) ? 'L' : 'R'; // sign convention per your autopilot's xtrack_error
-
-  String s = "$GPAPB,A,A,";
-  s += String(xteNm, 2); s += ",";
-  s += steerDir; s += ",N,V,V,";
-  s += String(s_targetBearingDeg, 1); s += ",T,,";
-  s += String(s_targetBearingDeg, 1); s += ",T,";
-  s += String(s_targetBearingDeg, 1); s += ",T";
-  sendSentence(s);
-}
-
-static void sendRMB() {
-  if (!s_haveNav) return;
-  float xteNm = fabs(s_xtrackErrorM) / 1852.0f;
-  char steerDir = (s_xtrackErrorM < 0) ? 'L' : 'R';
-  float distNm = s_wpDistM / 1852.0f;
-
-  String s = "$GPRMB,A,";
-  s += String(xteNm, 2); s += ",";
-  s += steerDir; s += ",,,,,,,,";
-  s += String(distNm, 2); s += ",";
-  s += String(s_targetBearingDeg, 1); s += ",,A";
-  sendSentence(s);
-}
-
 // ---------------------------------------------------------------------------
 // MAVLink message handling
 // ---------------------------------------------------------------------------
 
 void handleMavMessage(const mavlink_message_t &msg) {
-  Serial.println("Handling Message for bridge");
+  //Serial.println("Handling Message for bridge");
   switch (msg.msgid) {
     case MAVLINK_MSG_ID_GLOBAL_POSITION_INT: {
       mavlink_global_position_int_t p;
@@ -243,7 +205,7 @@ void handleMavMessage(const mavlink_message_t &msg) {
       s_courseDeg = courseRad * RAD_TO_DEG;
       if (s_courseDeg < 0) s_courseDeg += 360.0f;
       s_haveGps = true;
-      Serial.println("GLOBAL_POSITION_INT");
+      //Serial.println("GLOBAL_POSITION_INT");
       break;     
     }
     case MAVLINK_MSG_ID_GPS_RAW_INT: {
@@ -261,14 +223,14 @@ void handleMavMessage(const mavlink_message_t &msg) {
         s_courseDeg = g.cog / 100.0f;     // centidegrees
         s_haveGps = true;
       }
-      Serial.println("GPS_RAW_INT");
+      //Serial.println("GPS_RAW_INT");
       break;
     }
     case MAVLINK_MSG_ID_SYSTEM_TIME: {
       mavlink_system_time_t t;
       mavlink_msg_system_time_decode(&msg, &t);
       if (t.time_unix_usec != 0) s_timeUnixUsec = t.time_unix_usec;
-      Serial.println("SYSTEM_TIME");
+      //Serial.println("SYSTEM_TIME");
       break;
     }
     case MAVLINK_MSG_ID_VFR_HUD: {
@@ -276,17 +238,7 @@ void handleMavMessage(const mavlink_message_t &msg) {
       mavlink_msg_vfr_hud_decode(&msg, &v);
       s_headingMagDeg = v.heading; // degrees, 0-360
       s_haveHeading = true;
-      Serial.println("VFR_HUD");
-      break;
-    }
-    case MAVLINK_MSG_ID_NAV_CONTROLLER_OUTPUT: {
-      mavlink_nav_controller_output_t n;
-      mavlink_msg_nav_controller_output_decode(&msg, &n);
-      s_wpDistM = n.wp_dist;
-      s_targetBearingDeg = n.target_bearing;
-      s_xtrackErrorM = n.xtrack_error;
-      s_haveNav = true;
-      Serial.println("NAV_CONTROLLER_OUTPUT");
+      //Serial.println("VFR_HUD");
       break;
     }
     default:
@@ -310,10 +262,9 @@ void mavNmeaBridge_setDeclination(float declinationDeg) {
   s_declinationDeg = declinationDeg;
 }
 
-void mavNmeaBridge_setRates(uint32_t positionMs, uint32_t headingMs, uint32_t navMs) {
+void mavNmeaBridge_setRates(uint32_t positionMs, uint32_t headingMs) {
   s_positionRateMs = positionMs;
   s_headingRateMs  = headingMs;
-  s_navRateMs      = navMs;
 }
 
 void mavNmeaBridge_update() {
@@ -331,11 +282,5 @@ void mavNmeaBridge_update() {
     s_lastHeadingSend = now;
     sendHDM();
     sendHDT();
-  }
-
-  if (now - s_lastNavSend >= s_navRateMs) {
-    s_lastNavSend = now;
-    sendAPB();
-    sendRMB();
   }
 }

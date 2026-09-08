@@ -11,6 +11,7 @@
 
 #include "display.c"
 #include "mavlink_nmea_bridge.h"
+#include "opencpn_bridge.h"
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
@@ -33,6 +34,7 @@ WiFiUDP udp;
 #define SERIAL_TX 15  // TX2
 HardwareSerial ArduPilotSerial(2);  // Use UART2
 #define NMEA_UDP_PORT 10110
+#define OPENCPN_AP_UDP_PORT 10111
 
 // ===== Button Configuration =====
 ezButton plus1Button(14, INPUT_PULLUP);
@@ -132,7 +134,7 @@ void setup() {
   ArduinoOTA.setHostname("tilly-buttonbox");
   
   //pinMode(TFT_BACKGROUND, OUTPUT);    // sets the digital pin 13 as output
-  //analogWrite(5, 200); // 0 -> full brightness/whiteout, 1024 -> off
+  analogWrite(5, 0); // 0 -> full brightness/whiteout, 1024 -> off
   Serial.begin(115200);
   Serial.println("Tillys little helper");
   
@@ -178,6 +180,10 @@ void setup() {
 
   mavNmeaBridge_setup(ArduPilotSerial, udp, remoteIP, NMEA_UDP_PORT);
 
+  if (wifi == true) {
+    opencpnBridge_setup(OPENCPN_AP_UDP_PORT);
+  }
+
   #ifdef TILLY_DISPLAY
   lower.curText = String(current_heading);
   lower.desText = String(desired_heading);
@@ -190,7 +196,6 @@ void setup() {
   requestMessageStream(MAVLINK_MSG_ID_GPS_RAW_INT);
   requestMessageStream(MAVLINK_MSG_ID_SYSTEM_TIME);
   requestMessageStream(MAVLINK_MSG_ID_VFR_HUD);
-  requestMessageStream(MAVLINK_MSG_ID_NAV_CONTROLLER_OUTPUT);
   
   
   sendArmCommand();
@@ -224,28 +229,35 @@ void handleButtons(){
   standbyButton.loop();
 
   if (pilotMode == STANDBY) {
+      bool change = false; 
       if(plus1Button.isPressed()){        
         Serial.println("+1 step");
         standby_ram_position -= small_increment;
+        change = true;
       }
 
       if(plus10Button.isPressed()){        
         Serial.println("+10 step");
         standby_ram_position -= large_increment;
+        change = true;
       }
     
       if(minus1Button.isPressed()){
         Serial.println("-1 step");
         standby_ram_position += small_increment;
+        change = true;
       }
     
       if(minus10Button.isPressed()){
         Serial.println("-10 step");
         standby_ram_position += large_increment;
+        change = true;
       }
-      standby_ram_position = constrain(standby_ram_position, 1000, 2000);
 
-      sendRcOverride(standby_ram_position);
+      if (change == true) {
+        standby_ram_position = constrain(standby_ram_position, 1000, 2000);
+        sendRcOverride(standby_ram_position);
+      }
        
   } else {
     char buf[64];
@@ -468,6 +480,7 @@ void loop() {
   }
 
   mavNmeaBridge_update();
+  opencpnBridge_update();
   
   #ifdef TILLY_DISPLAY
   // Update displays
