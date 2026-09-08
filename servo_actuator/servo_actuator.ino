@@ -12,9 +12,14 @@
   - Ramped speed control (accel-limited) to move actuator to commanded position
 
   COMPATIBILITY NOTE:
-  Uses the classic `driver/rmt.h` API (arduino-esp32 core 2.x). Core 3.x
-  (ESP-IDF 5) uses a different RMT API (driver/rmt_rx.h) and this will need
-  porting if you're on that core version.
+  Ported to the new `driver/rmt_rx.h` API (ESP-IDF 5 / arduino-esp32 core 3.x).
+  The RMT peripheral is now handled through channel handles and an
+  install-once, re-arm-per-frame receive model, rather than the old
+  continuous ring buffer. A frame is captured into `rawRmtSymbols`, handed
+  off to the main loop through a small FreeRTOS queue from the RX-done
+  callback (which runs in ISR context), and the channel is immediately
+  re-armed with `rmt_receive()` so the next pulse is not missed. This will
+  NOT compile against arduino-esp32 core 2.x (classic `driver/rmt.h`).
 
   Hardware assumptions:
   - Linear potentiometer: 5 kOhm, 250 mm travel, wired as a voltage divider,
@@ -27,8 +32,8 @@
   Libraries required (install via Library Manager):
   - ESP32Servo
   - Adafruit_ADS1X15
-  (driver/rmt.h is part of the ESP-IDF bundled with arduino-esp32, no
-   separate install needed)
+  (driver/rmt_rx.h is part of the ESP-IDF bundled with arduino-esp32 core
+   3.x, no separate install needed)
 
   *** CALIBRATE BEFORE USE ***
   - ADC_COUNTS_AT_0MM / ADC_COUNTS_AT_250MM: raw ADS1115 readings taken with
@@ -39,7 +44,9 @@
 #include <ESP32Servo.h>
 #include <Wire.h>
 #include <Adafruit_ADS1X15.h>
-#include "driver/rmt.h"
+#include "driver/rmt_rx.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 
 // ---------- Pin definitions ----------
 #define RC_INPUT_PIN   GPIO_NUM_16
@@ -48,10 +55,10 @@
 #define I2C_SCL_PIN    22
 
 // ---------- RMT configuration ----------
-#define RMT_RX_CHANNEL       RMT_CHANNEL_0
-#define RMT_CLK_DIV          80      // 80MHz APB / 80 = 1MHz -> 1 tick = 1us
-#define RMT_IDLE_THRESHOLD   12000   // 12ms of continuous low ends a capture
-#define RMT_FILTER_TICKS     100     // filters glitches shorter than ~1.25us
+#define RMT_RESOLUTION_HZ    1000000  // 1MHz -> 1 tick = 1us
+#define RMT_MEM_BLOCK_SYMS   64       // symbol memory block size (ESP32 granularity)
+#define RMT_MIN_NS           1250     // filters glitches shorter than ~1.25us
+#define RMT_IDLE_NS          12000000 // 12ms of continuous level ends a capture
 
 // ---------- RC input calibration ----------
 const uint16_t RC_MIN_US = 999;
@@ -82,7 +89,11 @@ const uint16_t LOOP_INTERVAL_MS = 20; // 50 Hz
 Servo esc;
 Adafruit_ADS1115 ads;
 
-RingbufHandle_t rmtRingBuf = NULL;
+rmt_channel_handle_t rmtRxChannel = NULL;
+QueueHandle_t rmtRxQueue = NULL;
+rmt_symbol_word_t rawRmtSymbols[RMT_MEM_BLOCK_SYMS];
+rmt_receive_config_t rmtReceiveConfig = {};
+
 uint16_t rcPulseWidth_us = 1500;
 unsigned long rcLastPulseMillis = 0;
 
@@ -91,37 +102,51 @@ float currentPos_mm = 0.0;      // last measured position
 unsigned long lastLoopMillis = 0;
 
 // ---------------------------------------------------------
-// RMT RX setup (hardware pulse capture)
+// RMT RX setup (hardware pulse capture) - new driver/rmt_rx.h API
 // ---------------------------------------------------------
-void setupRMTCapture() {
-  rmt_config_t config = {};
-  config.rmt_mode = RMT_MODE_RX;
-  config.channel = RMT_RX_CHANNEL;
-  config.gpio_num = RC_INPUT_PIN;
-  config.clk_div = RMT_CLK_DIV;
-  config.mem_block_num = 1;
-  config.rx_config.filter_en = true;
-  config.rx_config.filter_ticks_thresh = RMT_FILTER_TICKS;
-  config.rx_config.idle_threshold = RMT_IDLE_THRESHOLD;
 
-  rmt_config(&config);
-  rmt_driver_install(config.channel, 1000, 0); // 1000-byte ring buffer, no TX
-
-  rmt_get_ringbuf_handle(RMT_RX_CHANNEL, &rmtRingBuf);
-  rmt_rx_start(RMT_RX_CHANNEL, true);
+// Runs in ISR context: just hand the completed frame off to the main loop.
+static bool IRAM_ATTR onRmtRxDone(rmt_channel_handle_t channel,
+                                   const rmt_rx_done_event_data_t *edata,
+                                   void *user_data) {
+  BaseType_t highTaskWakeup = pdFALSE;
+  xQueueSendFromISR(rmtRxQueue, edata, &highTaskWakeup);
+  return highTaskWakeup == pdTRUE;
 }
 
-// Non-blocking poll of the RMT ring buffer. Call every loop iteration.
-void pollRMTCapture() {
-  size_t rxSize = 0;
-  rmt_item32_t *items = (rmt_item32_t *)xRingbufferReceive(rmtRingBuf, &rxSize, 0);
-  if (items == NULL) return;
+void setupRMTCapture() {
+  rmt_rx_channel_config_t rxChannelCfg = {};
+  rxChannelCfg.gpio_num = RC_INPUT_PIN;
+  rxChannelCfg.clk_src = RMT_CLK_SRC_DEFAULT;
+  rxChannelCfg.resolution_hz = RMT_RESOLUTION_HZ;
+  rxChannelCfg.mem_block_symbols = RMT_MEM_BLOCK_SYMS;
 
-  int numItems = rxSize / sizeof(rmt_item32_t);
-  for (int i = 0; i < numItems; i++) {
-    if (items[i].level0 == 1) {
-      // duration0 = HIGH time in us (clk_div gives 1 tick = 1us)
-      uint16_t pulse_us = items[i].duration0;
+  rmt_new_rx_channel(&rxChannelCfg, &rmtRxChannel);
+
+  rmt_rx_event_callbacks_t cbs = {};
+  cbs.on_recv_done = onRmtRxDone;
+  rmtRxQueue = xQueueCreate(4, sizeof(rmt_rx_done_event_data_t));
+  rmt_rx_register_event_callbacks(rmtRxChannel, &cbs, NULL);
+
+  rmt_enable(rmtRxChannel);
+
+  rmtReceiveConfig.signal_range_min_ns = RMT_MIN_NS;
+  rmtReceiveConfig.signal_range_max_ns = RMT_IDLE_NS;
+
+  // Arm the first capture; every subsequent capture is re-armed in
+  // pollRMTCapture() right after a frame is consumed.
+  rmt_receive(rmtRxChannel, rawRmtSymbols, sizeof(rawRmtSymbols), &rmtReceiveConfig);
+}
+
+// Non-blocking poll of the RMT done-queue. Call every loop iteration.
+void pollRMTCapture() {
+  rmt_rx_done_event_data_t rxData;
+  if (xQueueReceive(rmtRxQueue, &rxData, 0) != pdTRUE) return;
+
+  for (size_t i = 0; i < rxData.num_symbols; i++) {
+    if (rxData.received_symbols[i].level0 == 1) {
+      // duration0 = HIGH time in us (resolution_hz gives 1 tick = 1us)
+      uint16_t pulse_us = rxData.received_symbols[i].duration0;
       if (pulse_us >= 800 && pulse_us <= 2200) { // sanity filter
         rcPulseWidth_us = pulse_us;
         rcLastPulseMillis = millis();
@@ -130,7 +155,8 @@ void pollRMTCapture() {
     }
   }
 
-  vRingbufferReturnItem(rmtRingBuf, (void *)items);
+  // Re-arm for the next frame using the same symbol buffer.
+  rmt_receive(rmtRxChannel, rawRmtSymbols, sizeof(rawRmtSymbols), &rmtReceiveConfig);
 }
 
 // ---------------------------------------------------------
@@ -190,7 +216,7 @@ void setup() {
 // Main loop
 // ---------------------------------------------------------
 void loop() {
-  pollRMTCapture(); // always service the RMT ring buffer
+  pollRMTCapture(); // always service the RMT done-queue
 
   unsigned long now = millis();
   if (now - lastLoopMillis < LOOP_INTERVAL_MS) return;
