@@ -20,6 +20,9 @@ extern void sendCustomEvent(const char* text, uint8_t severity);// -------------
 // ---------------------------------------------------------------------------
 static WiFiUDP s_udpIn;
 static uint16_t s_listenPort = 10111;
+static bool     s_socketReady = false;
+static uint32_t s_lastBindAttemptMs = 0;
+static const uint32_t kBindRetryIntervalMs = 2000;
 
 static float s_xteGainDegPerNm = 20.0f;
 static float s_xteMaxCorrDeg   = 30.0f;
@@ -131,8 +134,13 @@ static float computeSteerToHeading() {
 
 void opencpnBridge_setup(uint16_t listenPort) {
   s_listenPort = listenPort;
-  s_udpIn.begin(s_listenPort);
-  Serial.printf("OpenCPN autopilot bridge listening on UDP %d\n", s_listenPort);
+  s_lastBindAttemptMs = millis();
+  s_socketReady = s_udpIn.begin(s_listenPort) != 0;
+  if (s_socketReady) {
+    Serial.printf("OpenCPN autopilot bridge listening on UDP %d\n", s_listenPort);
+  } else {
+    Serial.printf("OpenCPN autopilot bridge: UDP bind on port %d failed, will retry\n", s_listenPort);
+  }
 }
 
 void opencpnBridge_setXteGain(float degPerNm, float maxCorrectionDeg) {
@@ -145,6 +153,19 @@ void opencpnBridge_setWatchdogTimeout(uint32_t timeoutMs) {
 }
 
 void opencpnBridge_update() {
+  uint32_t now = millis();
+
+  if (!s_socketReady) {
+    if (now - s_lastBindAttemptMs < kBindRetryIntervalMs) return;
+    s_lastBindAttemptMs = now;
+    s_socketReady = s_udpIn.begin(s_listenPort) != 0;
+    if (s_socketReady) {
+      Serial.printf("OpenCPN autopilot bridge: UDP bind on port %d succeeded\n", s_listenPort);
+    } else {
+      return;
+    }
+  }
+
   int packetSize;
   char udpBuf[512];
   while ((packetSize = s_udpIn.parsePacket()) > 0) {
@@ -164,7 +185,6 @@ void opencpnBridge_update() {
     }
   }
 
-  uint32_t now = millis();
   if (s_navValid && (now - s_lastNavUpdateMs > s_watchdogTimeoutMs)) {
     s_navValid = false;
     Serial.println("OpenCPN autopilot bridge: watchdog timeout, holding last heading");

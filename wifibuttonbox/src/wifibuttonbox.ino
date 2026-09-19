@@ -13,10 +13,11 @@
 #include "mavlink_nmea_bridge.h"
 #include "opencpn_bridge.h"
 #include "web_telemetry.h"
+#include "board_pins.h"
+#include "ButtonBox.h"
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <ezButton.h>
 #include <MAVLink_ardupilotmega.h>
 // Include MAVLink library - using ardupilotmega dialect for full ArduPilot support
 // https://github.com/okalachev/mavlink-arduino
@@ -24,27 +25,21 @@
 #include <ArduinoOTA.h>  // For enabling over the air updates
 #include <SPIFFS.h>
 
-#define TFT_BACKGROUND 5
-
 // Include WiFi configuration from external file
 #include "config.h"
 
 WiFiUDP udp;
 
 // ===== Hardware Serial Configuration =====
-#define SERIAL_RX 35  // RX2
-#define SERIAL_TX 15  // TX2
+#define SERIAL_RX MAVLINK_RX_PIN
+#define SERIAL_TX MAVLINK_TX_PIN
 HardwareSerial ArduPilotSerial(2);  // Use UART2
 #define NMEA_UDP_PORT 10110
 #define OPENCPN_AP_UDP_PORT 10111
 
 // ===== Button Configuration =====
-ezButton plus1Button(14, INPUT_PULLUP);
-ezButton plus10Button(26, INPUT_PULLUP);
-ezButton autoButton(12, INPUT_PULLUP);
-ezButton minus1Button(27, INPUT_PULLUP);
-ezButton minus10Button(22, INPUT_PULLUP);
-ezButton standbyButton(13, INPUT_PULLUP);
+// Button numbering (silkscreen): 1 Auto, 2 Standby, 3 -1, 4 +1, 5 -10, 6 +10
+ButtonBox buttonBox;
 
 // Broadcast Adress gets calculated automatically
 IPAddress remoteIP;   // udp broadcast
@@ -73,15 +68,15 @@ unsigned int standby_ram_position = 1500;
 
 // Variables for display data
 int current_heading = 0;
-int current_heading_old = 0;
 int desired_heading = 0;
-int desired_heading_old = 0;
 
 enum pilotModeType {STANDBY, AUTO};
 
-enum statusPanelType {GPS, EKF, MAG, INS, AHRS, PRE, LOG};
-
 pilotModeType pilotMode = STANDBY;
+
+#ifdef TILLY_DISPLAY
+TillyDisplayState displayState;
+#endif
 
 bool rc_override_active = false;
 
@@ -134,22 +129,15 @@ void setup() {
     });
   
   ArduinoOTA.setHostname("tilly-buttonbox");
-  
-  //pinMode(TFT_BACKGROUND, OUTPUT);    // sets the digital pin 13 as output
-  analogWrite(5, 0); // 0 -> full brightness/whiteout, 1024 -> off
+
   Serial.begin(115200);
   Serial.println("Tillys little helper");
-  
+
   // Initialize ArduPilot Serial
   ArduPilotSerial.begin(115200, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
   Serial.println("ArduPilot Serial initialized");
 
-  plus1Button.setDebounceTime(50);
-  plus10Button.setDebounceTime(50);
-  autoButton.setDebounceTime(50);
-  minus1Button.setDebounceTime(50);
-  minus10Button.setDebounceTime(50);
-  standbyButton.setDebounceTime(50);  
+  buttonBox.begin();
   Serial.println("Buttons initialized");
   
   
@@ -188,8 +176,6 @@ void setup() {
   }
 
   #ifdef TILLY_DISPLAY
-  lower.curText = String(current_heading);
-  lower.desText = String(desired_heading);
   initTillyDisplay();
   Serial.println("Display initialized");
   #endif
@@ -198,6 +184,7 @@ void setup() {
   requestMessageStream(MAVLINK_MSG_ID_GPS_RAW_INT);
   requestMessageStream(MAVLINK_MSG_ID_SYSTEM_TIME);
   requestMessageStream(MAVLINK_MSG_ID_VFR_HUD);
+  requestMessageStream(MAVLINK_MSG_ID_HEARTBEAT);
   requestMessageStream(MAVLINK_MSG_ID_ATTITUDE);
   requestMessageStream(MAVLINK_MSG_ID_PID_TUNING);
   requestMessageStream(MAVLINK_MSG_ID_SERVO_OUTPUT_RAW);
@@ -225,130 +212,69 @@ void sendCustomEvent(const char* text, uint8_t severity = MAV_SEVERITY_NOTICE) {
 
 
 
-void handleButtons(){
-  plus1Button.loop();
-  plus10Button.loop();
-  autoButton.loop();
-  minus1Button.loop();
-  minus10Button.loop();
-  standbyButton.loop();
-
+// Applies a +/-1 or +/-10 step: to standby_ram_position in STANDBY, to
+// desired_heading in AUTO.
+static void applyStep(int delta) {
   if (pilotMode == STANDBY) {
-      bool change = false; 
-      if(plus1Button.isPressed()){        
-        Serial.println("+1 step");
-        standby_ram_position -= small_increment;
-        change = true;
-      }
-
-      if(plus10Button.isPressed()){        
-        Serial.println("+10 step");
-        standby_ram_position -= large_increment;
-        change = true;
-      }
-    
-      if(minus1Button.isPressed()){
-        Serial.println("-1 step");
-        standby_ram_position += small_increment;
-        change = true;
-      }
-    
-      if(minus10Button.isPressed()){
-        Serial.println("-10 step");
-        standby_ram_position += large_increment;
-        change = true;
-      }
-
-      if (change == true) {
-        standby_ram_position = constrain(standby_ram_position, 1000, 2000);
-        sendRcOverride(standby_ram_position);
-      }
-       
+    standby_ram_position = constrain((int)standby_ram_position + delta, 1000, 2000);
+    sendRcOverride(standby_ram_position);
   } else {
+    desired_heading = ((desired_heading + delta) % 360 + 360) % 360;
     char buf[64];
-    // The buttons are mirrored/wrong on the current box
-    if(plus1Button.isPressed()){
-      desired_heading -= 1;
-      Serial.println("-1 deg");
-      snprintf(buf, sizeof(buf), "Course -1 deg, Heading +%d", desired_heading);   
-      sendCustomEvent(buf);
-    }
-  
-    if(plus10Button.isPressed()){
-      desired_heading -= 10;
-      Serial.println("-10 deg");
-      snprintf(buf, sizeof(buf), "Course -10 deg, Heading +%d", desired_heading);   
-      sendCustomEvent(buf);
-    }
-
-    if(minus1Button.isPressed()){
-      desired_heading += 1;
-      Serial.println("+1 deg");
-      snprintf(buf, sizeof(buf), "Course +1 deg, Heading +%d", desired_heading);   
-      sendCustomEvent(buf);
-    }
-  
-    if(minus10Button.isPressed()){
-      desired_heading += 10;
-      Serial.println("+10 deg");
-      snprintf(buf, sizeof(buf), "Course +10 deg, Heading +%d", desired_heading);   
-      sendCustomEvent(buf);
-    }
-
-    
-    
-
-    if (desired_heading > 359) {
-      desired_heading -= 360;
-    }
-
-    if (desired_heading < 0) {
-      desired_heading +=360;
-    }
-  }
-
-
-  // bc of the slow display, there's bouncing in the debounce lib. Dirty fix for now. TODO, I guess...
-  if(standbyButton.isPressed() && pilotMode == AUTO){
-    pilotMode = STANDBY;
-    standby_ram_position = 1500;
-    Serial.println("Standby");
-    setManualMode();
-    #ifdef TILLY_DISPLAY
-    lower.bgColor = ILI9341_RED;
-    drawLowerDisplay();
-    updateDeg(70, desired_heading, desired_heading_old);
-    updateDeg(10, current_heading, current_heading_old);
-    #endif
-  }
-  
-  
-  if(autoButton.isPressed() && pilotMode == STANDBY){
-    pilotMode = AUTO;
-    desired_heading = current_heading;
-    Serial.println("Auto");  
-    setGuidedMode();
-    // TODO: don't do this every time?
-    sendArmCommand();
-    #ifdef TILLY_DISPLAY
-    lower.bgColor = ILI9341_GREEN;
-    drawLowerDisplay();
-    updateDeg(70, desired_heading, desired_heading_old);
-    updateDeg(10, current_heading, current_heading_old);
-    #endif
+    snprintf(buf, sizeof(buf), "Course %+d deg, Heading %d", delta, desired_heading);
+    sendCustomEvent(buf);
   }
 }
 
-void setFieldFromFlag(String name, statusPanelType field, mavlink_sys_status_t message, uint16_t flag) {
-  if(message.onboard_control_sensors_health & flag ) {
-     fields[field].bgColor = ILI9341_GREEN;
-  } else {
-     fields[field].bgColor = ILI9341_RED;
-  }
-  fields[field].text = name;
-  
-}
+void handleButtons(){
+  buttonBox.update();
 
+  ButtonBox::Event ev;
+  while (buttonBox.popEvent(ev)) {
+    if (ev.type != ButtonBox::EventType::Click) continue;
+
+    switch (ev.mask) {
+      case 1 << 0:  // button 1: Auto
+        if (pilotMode == STANDBY) {
+          pilotMode = AUTO;
+          desired_heading = current_heading;
+          Serial.println("Auto");
+          setGuidedMode();
+          // TODO: don't do this every time?
+          sendArmCommand();
+        }
+        break;
+
+      case 1 << 1:  // button 2: Standby
+        if (pilotMode == AUTO) {
+          pilotMode = STANDBY;
+          standby_ram_position = 1500;
+          Serial.println("Standby");
+          setManualMode();
+        }
+        break;
+
+      case 1 << 2:  // button 3: -1
+        applyStep(-1 * (int)((pilotMode == STANDBY) ? small_increment : 1));
+        break;
+
+      case 1 << 3:  // button 4: +1
+        applyStep((int)((pilotMode == STANDBY) ? small_increment : 1));
+        break;
+
+      case 1 << 4:  // button 5: -10
+        applyStep(-1 * (int)((pilotMode == STANDBY) ? large_increment : 10));
+        break;
+
+      case 1 << 5:  // button 6: +10
+        applyStep((int)((pilotMode == STANDBY) ? large_increment : 10));
+        break;
+
+      default:
+        break;
+    }
+  }
+}
 
 void loop() {
   if (wifi == true) ArduinoOTA.handle(); 
@@ -376,74 +302,57 @@ void loop() {
             if (msg.msgid == MAVLINK_MSG_ID_VFR_HUD) {
                 mavlink_vfr_hud_t hud;
                 mavlink_msg_vfr_hud_decode(&msg, &hud);
-        
-                current_heading = hud.heading;   // heading in degrees (0–360)               
-                //Serial.println("Heading: " + String(current_heading));
+
+                current_heading = hud.heading;   // heading in degrees (0–360)
+                #ifdef TILLY_DISPLAY
+                displayState.curHeading = current_heading;
+                displayState.speedKn = hud.groundspeed * 1.94384f;
+                #endif
             }
 
+            #ifdef TILLY_DISPLAY
             if (msg.msgid == MAVLINK_MSG_ID_SYS_STATUS) {
                 mavlink_sys_status_t sys;
                 mavlink_msg_sys_status_decode(&msg, &sys);
-
-                // Taken from the mavproxy console source code
-
-                setFieldFromFlag("MAG", MAG, sys, MAV_SYS_STATUS_SENSOR_3D_MAG);
-                setFieldFromFlag("INS", INS, sys, MAV_SYS_STATUS_SENSOR_3D_ACCEL | MAV_SYS_STATUS_SENSOR_3D_GYRO);
-                setFieldFromFlag("AHRS", AHRS, sys, MAV_SYS_STATUS_AHRS);
-                setFieldFromFlag("PRE", PRE, sys, MAV_SYS_STATUS_PREARM_CHECK);
-                // why red?
-                //setFieldFromFlag("LOG", LOG, sys, MAV_SYS_STATUS_LOGGING);
-                
-
-                
-            
+                displayState.magOk = (sys.onboard_control_sensors_health & MAV_SYS_STATUS_SENSOR_3D_MAG) != 0;
             }
 
-            
-          /*
-           * 
-           * from the console source code
-           *             sensors = { 'AS'   : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_DIFFERENTIAL_PRESSURE,
-                        'MAG'  : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_3D_MAG,
-                        'INS'  : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_3D_ACCEL | mavutil.mavlink.MAV_SYS_STATUS_SENSOR_3D_GYRO,
-                        'AHRS' : mavutil.mavlink.MAV_SYS_STATUS_AHRS,
-                        'RC'   : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_RC_RECEIVER,
-                        'TERR' : mavutil.mavlink.MAV_SYS_STATUS_TERRAIN,
-                        'RNG'  : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_LASER_POSITION,
-                        'LOG'  : mavutil.mavlink.MAV_SYS_STATUS_LOGGING,
-                        'PRX'  : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_PROXIMITY,
-                        'PRE'  : mavutil.mavlink.MAV_SYS_STATUS_PREARM_CHECK,
-                        'FLO'  : mavutil.mavlink.MAV_SYS_STATUS_SENSOR_OPTICAL_FLOW,
-           * 
-           * 
-           * 
-           * 
-           */
+            // sysid 1 only - a GCS sharing this link (e.g. MAVProxy) sends its
+            // own heartbeat too, with base_mode never carrying the armed bit.
+            if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT && msg.sysid == 1) {
+                mavlink_heartbeat_t hb;
+                mavlink_msg_heartbeat_decode(&msg, &hb);
+                displayState.armed = (hb.base_mode & MAV_MODE_FLAG_SAFETY_ARMED) != 0;
+            }
+
+            if (msg.msgid == MAVLINK_MSG_ID_PID_TUNING) {
+                mavlink_pid_tuning_t pid;
+                mavlink_msg_pid_tuning_decode(&msg, &pid);
+                if (pid.axis == PID_TUNING_STEER) {
+                  displayState.pidFF = pid.FF;
+                  displayState.pidP = pid.P;
+                  displayState.pidI = pid.I;
+                  displayState.pidD = pid.D;
+                  displayState.pidSRate = pid.SRate;
+                }
+            }
+            #endif
 
           if (msg.msgid == MAVLINK_MSG_ID_EKF_STATUS_REPORT) {
             mavlink_ekf_status_report_t ekf_status;
             mavlink_msg_ekf_status_report_decode(&msg, &ekf_status);
-            //Serial.println("EKF Status " + String(ekf_status.flags));
-            if (ekf_status.flags & EKF_ATTITUDE) {
-              fields[EKF].bgColor = ILI9341_GREEN;
-            } else {
-              fields[EKF].bgColor = ILI9341_RED;
-            }
-            fields[EKF].text = "EKF";              
+            #ifdef TILLY_DISPLAY
+            displayState.ekfOk = (ekf_status.flags & EKF_ATTITUDE) != 0;
+            #endif
           }
 
           // this is raw gps data, non fused. maybe change?
           if (msg.msgid == MAVLINK_MSG_ID_GPS_RAW_INT) {
             mavlink_gps_raw_int_t gps_status;
             mavlink_msg_gps_raw_int_decode(&msg, &gps_status);
-            //Serial.println("GPS number SATS " + String(gps_status.satellites_visible));
-            if (gps_status.satellites_visible >= 6) {
-              fields[GPS].bgColor = ILI9341_GREEN;
-            } else {
-              fields[GPS].bgColor = ILI9341_RED;
-            }
-            fields[GPS].text = "SATS: \n   " + String(gps_status.satellites_visible);              
-            
+            #ifdef TILLY_DISPLAY
+            displayState.sats = gps_status.satellites_visible;
+            #endif
           }
           // update the nmea bridge
           handleMavMessage(msg);
@@ -467,24 +376,11 @@ void loop() {
   if (wifi == true) webTelemetry_update();
 
   #ifdef TILLY_DISPLAY
-  // Update displays
   if (millis() - lastDisplayUpdate > displayUpdateInterval) {
     lastDisplayUpdate = millis();
-    if (desired_heading_old != desired_heading) {     
-      updateDeg(70, desired_heading, desired_heading_old);
-    }
-    if (current_heading != current_heading_old) {
-      updateDeg(10, current_heading, current_heading_old);
-    }
-
-    // find out wich top fields to update...
-    for (int i = 0; i < 8; i++) {
-      if (fields[i].text    != prevFields[i].text ||
-        fields[i].bgColor != prevFields[i].bgColor)
-        {
-        drawSingleField(i);
-      }
-  }
+    displayState.autoMode = (pilotMode == AUTO);
+    displayState.desHeading = desired_heading;
+    updateTillyDisplay(displayState);
   }
   #endif
 

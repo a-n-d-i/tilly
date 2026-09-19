@@ -14,27 +14,13 @@ minicom -D /dev/ttyUSB1 -b 115200
 
 
 
-Pinout
+Hardware: Waveshare ESP32-S3-RLCD-4.2 ("eLCD"), a 400x300 reflective ST7305
+LCD driven over SPI via U8g2, with a PCF8574T I2C button expander (6 buttons,
+INT-driven). See include/board_pins.h for the full pin map. The ArduPilot
+MAVLink link (UART2) is wired to the board's P1 expansion header on GPIO18
+(RX) / GPIO3 (TX) - swap if it comes up backwards.
 
-
-| Shared With          | I/O  | I/O                  | Shared With          |
-|----------------------|------|----------------------| -------------------- |
-| n/a                  | 3.3V | GND                  | n/a                  |
-| NC/XTAL              | IO32 | IO33                 | NC/XTAL              |
-| Auto, Standby        | IO12 | IO13                 | JTAG, microSD        |
-| +1 -1                | IO14 | IO27                 | Camera               |
-| +10                  | IO26 | IO25                 | Camera, LCD          |
-| nn/RX(green)          | IO34 | IO35                 | Camera               |
-| Camera               | IO39 | IO36                 | Camera               |
-| JTAG                 | EN   | IO23                 | Camera, LCD          |
-| -10, LCD             | IO22 | IO21                 | Camera, LCD, microSD |
-| Camera, LCD          | IO19 | IO18                 | Camera, LCD          |
-| IO5                  | IO17 | PSRAM                | PSRAM                |
-| IO16                 | IO4  | LED, Camera, microSD | Camera, LED, Boot    |
-| IO0                  | IO2  | LED, microSD         | JTAG, microSD        |
-| IO15         (brown) | 5V   |                      |                      |
-
-IO19 tx, fix table...
+Buttons (silkscreen numbering): 1 Auto, 2 Standby, 3 -1, 4 +1, 5 -10, 6 +10.
 
 
 
