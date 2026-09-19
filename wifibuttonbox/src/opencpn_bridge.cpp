@@ -7,6 +7,7 @@
 #include <WiFiUdp.h>
 #include <WiFi.h>
 #include <MAVLink_ardupilotmega.h>
+#include "applog.h"
 
 // desired_heading lives in wifibuttonbox.ino - this module writes to it
 // directly, same as handleButtons() does for the +1/+10/-1/-10 buttons.
@@ -137,9 +138,9 @@ void opencpnBridge_setup(uint16_t listenPort) {
   s_lastBindAttemptMs = millis();
   s_socketReady = s_udpIn.begin(s_listenPort) != 0;
   if (s_socketReady) {
-    Serial.printf("OpenCPN autopilot bridge listening on UDP %d\n", s_listenPort);
+    appLog("OpenCPN autopilot bridge listening on UDP %d", s_listenPort);
   } else {
-    Serial.printf("OpenCPN autopilot bridge: UDP bind on port %d failed, will retry\n", s_listenPort);
+    appLog("OpenCPN autopilot bridge: UDP bind on port %d failed, will retry", s_listenPort);
   }
 }
 
@@ -160,7 +161,7 @@ void opencpnBridge_update() {
     s_lastBindAttemptMs = now;
     s_socketReady = s_udpIn.begin(s_listenPort) != 0;
     if (s_socketReady) {
-      Serial.printf("OpenCPN autopilot bridge: UDP bind on port %d succeeded\n", s_listenPort);
+      appLog("OpenCPN autopilot bridge: UDP bind on port %d succeeded", s_listenPort);
     } else {
       return;
     }
@@ -187,7 +188,7 @@ void opencpnBridge_update() {
 
   if (s_navValid && (now - s_lastNavUpdateMs > s_watchdogTimeoutMs)) {
     s_navValid = false;
-    Serial.println("OpenCPN autopilot bridge: watchdog timeout, holding last heading");
+    appLog("OpenCPN autopilot bridge: watchdog timeout, holding last heading");
   }
 
   if (s_navValid) {
@@ -196,7 +197,7 @@ void opencpnBridge_update() {
     if (newHeading < 0) newHeading += 360;
     if (newHeading != desired_heading) {
       desired_heading = newHeading;
-      Serial.printf("OpenCPN autopilot bridge: desired_heading -> %d\n", desired_heading);
+      appLog("OpenCPN autopilot bridge: desired_heading -> %d", desired_heading);
       char buf[64];
       snprintf(buf, sizeof(buf), "OpenCPN AP, Heading -> %d", desired_heading);
       sendCustomEvent(buf, MAV_SEVERITY_NOTICE);

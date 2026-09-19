@@ -12,6 +12,7 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <ArduinoJson.h>
+#include "applog.h"
 
 static const uint16_t HTTP_PORT = 80;
 static const uint16_t WS_PORT = 81;
@@ -74,7 +75,10 @@ static unsigned long s_lastParamPollMs = 0;
 static void sendToVehicle(const mavlink_message_t &msg) {
   uint8_t buf[MAVLINK_MAX_PACKET_LEN];
   uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-  s_mavSerial->write(buf, len);
+  size_t written = s_mavSerial->write(buf, len);
+  if (written != len) {
+    appLog("[web] MAVLink write short: %u/%u bytes (msgid %u)", (unsigned)written, (unsigned)len, (unsigned)msg.msgid);
+  }
 }
 
 static void requestTrackedParams() {
@@ -181,9 +185,9 @@ static void wsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
   (void)payload;
   (void)length;
   if (type == WStype_CONNECTED) {
-    Serial.printf("[web] client %u connected\n", num);
+    appLog("[web] client %u connected", num);
   } else if (type == WStype_DISCONNECTED) {
-    Serial.printf("[web] client %u disconnected\n", num);
+    appLog("[web] client %u disconnected", num);
   }
   // Dashboard is read-only, doesn't send anything - nothing else to handle.
 }
@@ -231,16 +235,16 @@ void webTelemetry_setup(HardwareSerial &mavSerial) {
   s_t0Ms = millis();
 
   if (!SPIFFS.begin(true)) {
-    Serial.println("[web] SPIFFS mount failed - upload the filesystem image with `pio run -t uploadfs`");
+    appLog("[web] SPIFFS mount failed - upload the filesystem image with `pio run -t uploadfs`");
   }
 
   s_http.serveStatic("/", SPIFFS, "/index.html");
   s_http.begin();
-  Serial.printf("[web] HTTP dashboard on port %u\n", HTTP_PORT);
+  appLog("[web] HTTP dashboard on port %u", HTTP_PORT);
 
   s_ws.begin();
   s_ws.onEvent(wsEvent);
-  Serial.printf("[web] telemetry WebSocket on port %u\n", WS_PORT);
+  appLog("[web] telemetry WebSocket on port %u", WS_PORT);
 
   setGcsPidMask();
   requestTrackedParams();

@@ -1,6 +1,7 @@
 #ifdef TILLY_DISPLAY
 #include "ST7305_U8g2.h"
 #include "board_pins.h"
+#include "applog.h"
 
 // ----- SCREEN GEOMETRY (landscape, after U8G2_R1 rotation) -----
 static const int DISP_W = RLCD_WIDTH;   // 400
@@ -91,6 +92,32 @@ void updateTillyDisplay(const TillyDisplayState &s) {
   for (int i = 0; i < 5; i++) {
     int x = gap + i * (boxW + gap);
     drawPidBox(x, boxY, boxW, boxH, terms[i].label, terms[i].value);
+  }
+
+  tillyU8g2->sendBuffer();
+}
+
+// Full-screen scrollback view of appLog()'s ring buffer. Toggled by holding
+// buttons 5+6 together (see handleButtons() in wifibuttonbox.ino).
+void updateTillyLogScreen() {
+  tillyU8g2->clearBuffer();
+
+  tillyU8g2->setFont(u8g2_font_6x12_tr);
+  tillyU8g2->drawStr(4, 11, "LOG - hold 5+6 to exit");
+  tillyU8g2->drawHLine(0, 15, DISP_W);
+
+  const int lineH = 12;
+  const int top = 15 + lineH;
+  const int maxLines = (DISP_H - top) / lineH;
+
+  size_t total = appLogCount();
+  size_t shown = (total < (size_t)maxLines) ? total : (size_t)maxLines;
+  size_t startIdx = total - shown;  // oldest of the visible window
+
+  int y = top;
+  for (size_t i = 0; i < shown; i++) {
+    tillyU8g2->drawStr(2, y, appLogLine(startIdx + i));
+    y += lineH;
   }
 
   tillyU8g2->sendBuffer();

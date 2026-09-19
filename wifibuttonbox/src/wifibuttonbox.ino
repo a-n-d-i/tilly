@@ -15,6 +15,7 @@
 #include "web_telemetry.h"
 #include "board_pins.h"
 #include "ButtonBox.h"
+#include "applog.h"
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
@@ -76,6 +77,7 @@ pilotModeType pilotMode = STANDBY;
 
 #ifdef TILLY_DISPLAY
 TillyDisplayState displayState;
+bool showLogScreen = false;  // toggled by holding buttons 5+6 together
 #endif
 
 bool rc_override_active = false;
@@ -89,8 +91,20 @@ static void computeBroadcastAddress() {
   IPAddress bcast;
   for (int i = 0; i < 4; i++) bcast[i] = ip[i] | (~mask[i] & 0xFF);
   remoteIP = bcast;
-  Serial.printf("UDP broadcast target: %s:%d\n",
-                remoteIP.toString().c_str(), NMEA_UDP_PORT);
+  appLog("UDP broadcast target: %s:%d", remoteIP.toString().c_str(), NMEA_UDP_PORT);
+}
+
+// Serializes and writes a MAVLink message, logging (instead of silently
+// dropping) if the UART couldn't take the full packet.
+static bool sendMavlink(Stream &serial, const mavlink_message_t &msg) {
+  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+  size_t written = serial.write(buf, len);
+  if (written != len) {
+    appLog("MAVLink write short: %u/%u bytes (msgid %u)", (unsigned)written, (unsigned)len, (unsigned)msg.msgid);
+    return false;
+  }
+  return true;
 }
 
 void setup() {
@@ -105,67 +119,69 @@ void setup() {
         SPIFFS.end(); // unmount so the OTA write isn't racing our own mount
       }
 
-      Serial.println("Start updating " + type);
+      appLog("OTA: start updating %s", type.c_str());
     })
     .onEnd([]() {
-      Serial.println("\nEnd");
+      appLog("OTA: update finished");
     })
     .onProgress([](unsigned int progress, unsigned int total) {
       Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
     })
     .onError([](ota_error_t error) {
-      Serial.printf("Error[%u]: ", error);
-      if (error == OTA_AUTH_ERROR) {
-        Serial.println("Auth Failed");
-      } else if (error == OTA_BEGIN_ERROR) {
-        Serial.println("Begin Failed");
-      } else if (error == OTA_CONNECT_ERROR) {
-        Serial.println("Connect Failed");
-      } else if (error == OTA_RECEIVE_ERROR) {
-        Serial.println("Receive Failed");
-      } else if (error == OTA_END_ERROR) {
-        Serial.println("End Failed");
-      }
+      const char *reason = "Unknown";
+      if (error == OTA_AUTH_ERROR) reason = "Auth Failed";
+      else if (error == OTA_BEGIN_ERROR) reason = "Begin Failed";
+      else if (error == OTA_CONNECT_ERROR) reason = "Connect Failed";
+      else if (error == OTA_RECEIVE_ERROR) reason = "Receive Failed";
+      else if (error == OTA_END_ERROR) reason = "End Failed";
+      appLog("OTA error [%u]: %s", error, reason);
     });
-  
+
   ArduinoOTA.setHostname("tilly-buttonbox");
 
   Serial.begin(115200);
-  Serial.println("Tillys little helper");
+
+  #ifdef TILLY_DISPLAY
+  initTillyDisplay();
+  #endif
+
+  appLog("Tillys little helper");
 
   // Initialize ArduPilot Serial
   ArduPilotSerial.begin(115200, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
-  Serial.println("ArduPilot Serial initialized");
+  appLog("ArduPilot Serial initialized");
 
   buttonBox.begin();
-  Serial.println("Buttons initialized");
-  
-  
+  appLog("Buttons initialized");
+
+
   // Connect to WiFi
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
+  appLog("Connecting to WiFi...");
 
   int wifiTimeout = millis() + 30000;
-  
+
   while ((WiFi.status() != WL_CONNECTED) and (millis() < wifiTimeout)){
     delay(500);
     //ESP.restart();
     Serial.print(".");
   }
-  
+
   if (WiFi.status() == WL_CONNECTED) {
     wifi = true;
-    Serial.println("\nWiFi connected!");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
+    Serial.println();
+    appLog("WiFi connected, IP %s", WiFi.localIP().toString().c_str());
     computeBroadcastAddress();
-  
+
     ArduinoOTA.begin();  // Starts OTA
-    
+
     // Start UDP
     udp.begin(udpPort);
-    Serial.printf("UDP listening on port %d\n", udpPort);
+    appLog("UDP listening on port %d", udpPort);
+  } else {
+    Serial.println();
+    appLog("WiFi connect timed out");
   }
 
   mavNmeaBridge_setup(ArduPilotSerial, udp, remoteIP, NMEA_UDP_PORT);
@@ -174,11 +190,6 @@ void setup() {
     opencpnBridge_setup(OPENCPN_AP_UDP_PORT);
     webTelemetry_setup(ArduPilotSerial);
   }
-
-  #ifdef TILLY_DISPLAY
-  initTillyDisplay();
-  Serial.println("Display initialized");
-  #endif
 
   requestMessageStream(MAVLINK_MSG_ID_GLOBAL_POSITION_INT);
   requestMessageStream(MAVLINK_MSG_ID_GPS_RAW_INT);
@@ -196,7 +207,6 @@ void setup() {
 // Sends a custom "event" as a STATUSTEXT. Text field is max 50 chars (MAVLink2).
 void sendCustomEvent(const char* text, uint8_t severity = MAV_SEVERITY_NOTICE) {
   mavlink_message_t msg;
-  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
 
   mavlink_msg_statustext_pack(
     250, 1, &msg,
@@ -206,8 +216,7 @@ void sendCustomEvent(const char* text, uint8_t severity = MAV_SEVERITY_NOTICE) {
     0    // chunk_seq
   );
 
-  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-   ArduPilotSerial.write(buf, len);
+  sendMavlink(ArduPilotSerial, msg);
 }
 
 
@@ -226,11 +235,22 @@ static void applyStep(int delta) {
   }
 }
 
+// Buttons 5+6 (-10 / +10) held together toggle the on-screen log view.
+static const uint8_t kLogScreenComboMask = (1 << 4) | (1 << 5);
+
 void handleButtons(){
   buttonBox.update();
 
   ButtonBox::Event ev;
   while (buttonBox.popEvent(ev)) {
+    #ifdef TILLY_DISPLAY
+    if (ev.type == ButtonBox::EventType::ComboStart && ev.mask == kLogScreenComboMask) {
+      showLogScreen = !showLogScreen;
+      appLog(showLogScreen ? "Log screen on" : "Log screen off");
+      continue;
+    }
+    #endif
+
     if (ev.type != ButtonBox::EventType::Click) continue;
 
     switch (ev.mask) {
@@ -238,7 +258,7 @@ void handleButtons(){
         if (pilotMode == STANDBY) {
           pilotMode = AUTO;
           desired_heading = current_heading;
-          Serial.println("Auto");
+          appLog("Auto");
           setGuidedMode();
           // TODO: don't do this every time?
           sendArmCommand();
@@ -249,7 +269,7 @@ void handleButtons(){
         if (pilotMode == AUTO) {
           pilotMode = STANDBY;
           standby_ram_position = 1500;
-          Serial.println("Standby");
+          appLog("Standby");
           setManualMode();
         }
         break;
@@ -378,9 +398,13 @@ void loop() {
   #ifdef TILLY_DISPLAY
   if (millis() - lastDisplayUpdate > displayUpdateInterval) {
     lastDisplayUpdate = millis();
-    displayState.autoMode = (pilotMode == AUTO);
-    displayState.desHeading = desired_heading;
-    updateTillyDisplay(displayState);
+    if (showLogScreen) {
+      updateTillyLogScreen();
+    } else {
+      displayState.autoMode = (pilotMode == AUTO);
+      displayState.desHeading = desired_heading;
+      updateTillyDisplay(displayState);
+    }
   }
   #endif
 
@@ -408,11 +432,8 @@ void sendArmCommand(){
             0, // param6
             0); // param7
 
-    // Serialize and send over serial
-    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-    Serial.println("Sending ARM to tilly");
-    ArduPilotSerial.write(buf, len);
+    appLog("Sending ARM to tilly");
+    sendMavlink(ArduPilotSerial, msg);
 }
 
 void setGuidedMode() {
@@ -445,11 +466,8 @@ void sendModeCommand(int modeNumber, int subMode){
             0, // param6
             0); // param7
 
-    // Serialize and send over serial
-    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-    Serial.println("Sending Mode to tilly");
-    ArduPilotSerial.write(buf, len);
+    appLog("Sending Mode to tilly");
+    sendMavlink(ArduPilotSerial, msg);
 }
 
 
@@ -476,11 +494,7 @@ void sendYawCommandDeg(Stream &serial, uint8_t target_system, uint8_t target_com
         0                       // yaw_rate
     );
 
-    // Serialize and send over serial
-    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-    //Serial.println("writing to tilly");
-    serial.write(buf, len);
+    sendMavlink(serial, msg);
 }
 
 
@@ -501,9 +515,7 @@ void requestMessageStream(uint8_t message_number) {
         100000,          // param2: interval in microseconds (10 Hz)
         0, 0, 0, 0, 0);  // param3-7: unused
 
-    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-    ArduPilotSerial.write(buf, len);
+    sendMavlink(ArduPilotSerial, msg);
 }
 
 
@@ -529,10 +541,7 @@ void sendRcOverride(uint16_t value) {
         0,0,0,0,0,0,0,0,0,0,0       // channel 8-18
     );
 
-    // Serialize and send
-    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-    ArduPilotSerial.write(buf, len);
+    sendMavlink(ArduPilotSerial, msg);
 }
 
 
@@ -559,9 +568,6 @@ void sendCompassCalibrationCommand(){
          0    // param7 (unused)
   );
 
-    // Serialize and send over serial
-    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-    Serial.println("CompassCalibration");
-    ArduPilotSerial.write(buf, len);
+    appLog("CompassCalibration");
+    sendMavlink(ArduPilotSerial, msg);
 }

@@ -10,6 +10,7 @@
 
 #include "mavlink_nmea_bridge.h"
 #include <MAVLink_ardupilotmega.h>
+#include "applog.h"
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -251,7 +252,7 @@ void handleMavMessage(const mavlink_message_t &msg) {
 // ---------------------------------------------------------------------------
 
 void mavNmeaBridge_setup(HardwareSerial &mavSerial, WiFiUDP &udp, IPAddress broadcastIP, uint16_t udpPort) {
-  Serial.println("Setting up NMEA Bridge");
+  appLog("Setting up NMEA Bridge");
   s_mavSerial = &mavSerial;
   s_broadcastIP = broadcastIP;
   s_udpPort = udpPort;
