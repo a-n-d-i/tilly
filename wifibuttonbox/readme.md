@@ -1,3 +1,14 @@
+PlatformIO project. Build/upload with `pio run` / `pio run -t upload`, or the
+PlatformIO IDE extension. Copy include/config.h.example to include/config.h
+and fill in WiFi credentials before building.
+
+The tuning/live-telemetry dashboard (data/index.html) is served straight off
+the ESP32 at http://<device-ip>/, with telemetry over a WebSocket on port 81
+(auto-connects, no setup). It lives on the SPIFFS filesystem partition, so
+after changing data/index.html it needs its own upload step, separate from
+the firmware:
+    pio run -t uploadfs
+
 Connect serial while OTA updating:
 minicom -D /dev/ttyUSB1 -b 115200
 

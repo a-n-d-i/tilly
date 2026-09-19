@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tilly — Tuning &amp; Live Telemetry</title>
+<script src="https://cdn.jsdelivr.net/npm/vue@3.4.31/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.js"></script>
+<style>
+:root{
+  --bg:#f7f6f2; --card:#ffffff; --ink:#1c1b19; --sub:#57554e; --muted:#8a877d;
+  --line:#d8d5cb; --line-strong:#b3afa2;
+  --gray:#efeee9; --gray-ink:#3a382f; --gray-b:#c7c4b8;
+  --teal:#e1f5ee; --teal-ink:#04342c; --teal-b:#5dcaa5;
+  --amber:#faeeda; --amber-ink:#412402; --amber-b:#ef9f27;
+  --purple:#eeedfe; --purple-ink:#26215c; --purple-b:#7f77dd;
+  --code-bg:#f0efe9; --code-ink:#3a382f;
+  --accent:#185fa5; --accent-ink:#ffffff;
+  --ok:#2ca02c; --bad:#8a877d;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#1a1918; --card:#242320; --ink:#eeece5; --sub:#b8b5aa; --muted:#8a877d;
+    --line:#3a3833; --line-strong:#514e46;
+    --gray:#2c2b27; --gray-ink:#d3d1c7; --gray-b:#5f5e5a;
+    --teal:#0a2e27; --teal-ink:#9fe1cb; --teal-b:#1d9e75;
+    --amber:#3a2708; --amber-ink:#fac775; --amber-b:#ba7517;
+    --purple:#221f45; --purple-ink:#cecbf6; --purple-b:#534ab7;
+    --code-bg:#2c2b27; --code-ink:#d3d1c7;
+    --accent:#378add; --accent-ink:#042c53;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#1a1918; --card:#242320; --ink:#eeece5; --sub:#b8b5aa; --muted:#8a877d;
+  --line:#3a3833; --line-strong:#514e46;
+  --gray:#2c2b27; --gray-ink:#d3d1c7; --gray-b:#5f5e5a;
+  --teal:#0a2e27; --teal-ink:#9fe1cb; --teal-b:#1d9e75;
+  --amber:#3a2708; --amber-ink:#fac775; --amber-b:#ba7517;
+  --purple:#221f45; --purple-ink:#cecbf6; --purple-b:#534ab7;
+  --code-bg:#2c2b27; --code-ink:#d3d1c7;
+  --accent:#378add; --accent-ink:#042c53;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  line-height:1.5; padding:24px 16px 60px;
+}
+.wrap{max-width:920px; margin:0 auto;}
+h1{font-size:20px; font-weight:600; margin:0 0 4px;}
+.subtitle{color:var(--sub); font-size:13.5px; margin:0 0 16px;}
+.tabbar{display:flex; gap:6px; margin-bottom:18px; border-bottom:1px solid var(--line); flex-wrap:wrap;}
+.tabbtn{
+  background:none; border:none; border-bottom:2px solid transparent; color:var(--sub);
+  font-size:13.5px; font-weight:600; padding:9px 4px; margin-right:14px; cursor:pointer;
+}
+.tabbtn:hover{color:var(--ink);}
+.tabbtn.active{color:var(--accent); border-bottom-color:var(--accent);}
+.topbar{display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:20px;}
+.legend{display:flex; flex-wrap:wrap; gap:10px 18px; font-size:12.5px; color:var(--sub);}
+.legend span{display:inline-flex; align-items:center; gap:6px;}
+.dot{width:11px; height:11px; border-radius:3px; display:inline-block; border:1px solid var(--line-strong);}
+button.reset-all{
+  background:var(--card); border:1px solid var(--line-strong); color:var(--ink);
+  border-radius:8px; padding:6px 12px; font-size:12.5px; cursor:pointer;
+}
+button.reset-all:hover{border-color:var(--accent);}
+.flow{display:flex; flex-direction:column; align-items:stretch; max-width:760px;}
+.group-label{font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin-bottom:6px;}
+.stage{
+  background:var(--card); border:1px solid var(--line); border-radius:10px;
+  padding:14px 16px; font-size:12.5px; display:flex; flex-direction:column; gap:10px;
+  box-shadow:0 1px 2px rgba(0,0,0,0.04);
+}
+.stage.gray{background:var(--gray); border-color:var(--gray-b);}
+.stage.teal{background:var(--teal); border-color:var(--teal-b);}
+.stage.amber{background:var(--amber); border-color:var(--amber-b);}
+.stage.purple{background:var(--purple); border-color:var(--purple-b);}
+.stage h3{margin:0; font-size:14px; font-weight:600;}
+.gray h3{color:var(--gray-ink);}
+.teal h3{color:var(--teal-ink);}
+.amber h3{color:var(--amber-ink);}
+.purple h3{color:var(--purple-ink);}
+.paramgrid{display:flex; flex-direction:column; gap:6px;}
+.paramrow{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+.paramrow .plabel{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px;
+  font-weight:600; min-width:150px; color:var(--ink);
+}
+.stepper{display:flex; align-items:center; gap:0; border:1px solid var(--line-strong); border-radius:7px; overflow:hidden; background:var(--bg);}
+.stepper button{
+  width:26px; height:26px; border:none; background:transparent; color:var(--ink);
+  font-size:14px; cursor:pointer; display:flex; align-items:center; justify-content:center;
+  line-height:1;
+}
+.stepper button:hover{background:var(--accent); color:var(--accent-ink);}
+.stepper button:active{filter:brightness(0.95);}
+.stepper input{
+  width:66px; text-align:center; border:none; border-left:1px solid var(--line-strong);
+  border-right:1px solid var(--line-strong); background:var(--card); color:var(--ink);
+  font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  height:26px; padding:0 2px;
+}
+.stepper input::-webkit-inner-spin-button, .stepper input::-webkit-outer-spin-button{-webkit-appearance:none; margin:0;}
+.punit{font-size:11px; color:var(--muted); min-width:44px;}
+.prange{font-size:10px; color:var(--muted);}
+.pnote{font-size:11px; color:var(--muted); font-style:italic;}
+.formula{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px;
+  background:var(--code-bg); color:var(--code-ink); border-radius:6px; padding:8px 10px;
+  white-space:pre-wrap; line-height:1.5; word-break:break-word; margin:0;
+}
+.desc{font-size:11.5px; color:var(--sub);}
+.live{
+  font-size:12px; font-weight:600; border-radius:6px; padding:6px 9px;
+  display:inline-flex; align-items:baseline; gap:6px;
+}
+.gray .live, .teal .live, .amber .live, .purple .live{background:var(--card); border:1px solid var(--line-strong);}
+.live .lval{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:13px;}
+.live .lnote{font-weight:400; color:var(--muted); font-size:10.5px;}
+.src{font-size:10.5px; color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+.arrow{display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:18px; margin:4px 0;}
+.notes{
+  margin-top:28px; padding:16px 18px; background:var(--card); border:1px solid var(--line);
+  border-radius:10px; font-size:13px; color:var(--sub); max-width:760px;
+}
+.notes h4{margin:0 0 8px; font-size:13.5px; color:var(--ink); font-weight:600;}
+.notes ul{margin:6px 0 0; padding-left:18px;}
+.notes li{margin-bottom:4px;}
+.notes code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; color:var(--ink); background:var(--code-bg); padding:1px 4px; border-radius:4px;}
+.caveat{margin-top:14px; padding-top:12px; border-top:1px solid var(--line); font-size:12px; color:var(--muted);}
+
+.chartcard{
+  background:var(--card); border:1px solid var(--line); border-radius:10px;
+  padding:14px 16px; margin-bottom:16px;
+}
+.chartcard h4{margin:0 0 8px; font-size:13.5px; font-weight:600;}
+.chartwrap{position:relative; height:190px;}
+.chartwrap.tall{height:280px;}
+.livebar{display:flex; align-items:center; gap:10px; margin-bottom:16px; flex-wrap:wrap;}
+.wsinput{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px;
+  padding:7px 10px; border-radius:8px; border:1px solid var(--line-strong);
+  background:var(--card); color:var(--ink); width:230px;
+}
+.statusdot{width:10px; height:10px; border-radius:50%; display:inline-block; background:var(--bad);}
+.statusdot.on{background:var(--ok);}
+</style>
+</head>
+<body>
+<div id="app" class="wrap">
+
+  <h1>Tilly — Tuning &amp; Live Telemetry</h1>
+
+  <div class="tabbar">
+    <button :class="['tabbtn', tab==='flow'?'active':'']" @click="tab='flow'">Signal Flow</button>
+    <button :class="['tabbtn', tab==='live'?'active':'']" @click="tab='live'">Live Telemetry</button>
+  </div>
+
+  <div class="livebar">
+    <span class="statusdot" :class="wsConnected ? 'on' : ''"></span>
+    <span class="desc">{{ wsStatusText }}<span v-if="wsConnected && lastParamSync"> · params synced {{ fmt(paramsAgeSec,0) }}s ago</span></span>
+  </div>
+
+  <section v-show="tab==='flow'">
+  <p class="subtitle">Adjust any parameter with the +/- steppers or by typing a value — every field is clamped to its min/max. Live values recompute downstream through the chain (assuming the vehicle starts at rest, so integrator and slew-history terms read as their instantaneous, not settled, contribution).</p>
+
+  <div class="topbar">
+    <div class="legend">
+      <span><span class="dot" style="background:var(--gray); border-color:var(--gray-b)"></span>input / output</span>
+      <span><span class="dot" style="background:var(--teal); border-color:var(--teal-b)"></span>angle (outer) loop</span>
+      <span><span class="dot" style="background:var(--amber); border-color:var(--amber-b)"></span>rate shaping / limits</span>
+      <span><span class="dot" style="background:var(--purple); border-color:var(--purple-b)"></span>rate (inner) PID + FF loop</span>
+    </div>
+    <button class="reset-all" @click="resetAll">Reset all to defaults</button>
+  </div>
+
+  <div class="flow">
+
+    <div class="group-label">input — scenario</div>
+    <div class="stage gray">
+      <h3>Heading error &amp; speed</h3>
+      <div class="paramgrid">
+        <param-row :p="p.err_yaw"></param-row>
+        <param-row :p="p.speed"></param-row>
+      </div>
+      <div class="formula">err_yaw = wrap_180(target_heading - actual_heading)</div>
+      <div class="desc">Scenario inputs feeding the rest of the chain. Not real ArduPilot parameters — just the operating point you're exploring.</div>
+      <div class="src">Source: Rover/mode.cpp — Mode::calc_steering_to_heading()</div>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <div class="group-label">outer loop</div>
+    <div class="stage teal">
+      <h3>Steering angle P</h3>
+      <div class="paramgrid">
+        <param-row :p="p.ATC_STR_ANG_P"></param-row>
+      </div>
+      <div class="formula">des_turn_rate = err_yaw × ATC_STR_ANG_P</div>
+      <div class="live">des_turn_rate = <span class="lval">{{ fmt(desiredRateAngle,1) }}°/s</span></div>
+      <div class="src">Source: AR_AttitudeControl.cpp — AR_AttitudeControl::get_turn_rate_from_heading()</div>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <div class="group-label">rate ceiling</div>
+    <div class="stage amber">
+      <h3>Max turn-rate clamp</h3>
+      <div class="paramgrid">
+        <param-row :p="p.ACRO_TURN_RATE"></param-row>
+        <param-row :p="p.ATC_STR_RAT_MAX"></param-row>
+        <param-row :p="p.TURN_RADIUS"></param-row>
+      </div>
+      <div class="formula">rate_limit = min(ACRO_TURN_RATE, ATC_STR_RAT_MAX, speed / TURN_RADIUS)
+des_turn_rate = constrain(des_turn_rate, ±rate_limit)</div>
+      <div class="live">rate_limit = <span class="lval">{{ fmt(rateLimit,1) }}°/s</span><span class="lnote">→ clamped: {{ fmt(desiredRateClamped,1) }}°/s</span></div>
+      <div class="desc">ATC_STR_RAT_MAX = 0 and TURN_RADIUS = 0 are both treated as "no limit" from that term, matching firmware convention.</div>
+      <div class="src">Source: AR_AttitudeControl.cpp — get_turn_rate_from_heading()<br>AR_WPNav.cpp — turn-rate limit from TURN_RADIUS</div>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <div class="group-label">shaping</div>
+    <div class="stage amber">
+      <h3>Accel / decel slew limiter</h3>
+      <div class="paramgrid">
+        <param-row :p="p.ATC_STR_ACC_MAX"></param-row>
+        <param-row :p="p.ATC_STR_DEC_MAX"></param-row>
+      </div>
+      <div class="formula">max_step = (accelerating ? ATC_STR_ACC_MAX : ATC_STR_DEC_MAX) × dt
+des_turn_rate = slew_limit(des_turn_rate, prev, max_step)</div>
+      <div class="live">Δrate_max this loop ≈ <span class="lval">{{ fmt(p.ATC_STR_ACC_MAX.value*0.02,2) }}°/s</span><span class="lnote">= ATC_STR_ACC_MAX × dt, the most the demand can rise by in one 20 ms loop (while accelerating)</span></div>
+      <div class="desc">This stage is history-dependent (it limits how fast the demand can change between loop iterations), so no single settled output is shown — only the per-loop step size it allows.</div>
+      <div class="src">Source: AR_AttitudeControl.cpp — AR_AttitudeControl::get_steering_out_rate()</div>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <div class="group-label">inner loop — filters</div>
+    <div class="stage purple">
+      <h3>Target &amp; measurement filters</h3>
+      <div class="paramgrid">
+        <param-row :p="p.ATC_STR_RAT_FLTT"></param-row>
+        <param-row :p="p.ATC_STR_RAT_FLTE"></param-row>
+        <param-row :p="p.ATC_STR_RAT_FLTD"></param-row>
+      </div>
+      <div class="formula">tgt_f = LPF(des_turn_rate, FLTT)
+meas_f = LPF(actual_yaw_rate)
+err_f = LPF(tgt_f - meas_f, FLTE)</div>
+      <div class="desc">Filters need real time-series data to settle, so below we treat the vehicle as at rest and already settled (err_f ≈ des_turn_rate).</div>
+      <div class="src">Source: libraries/AC_PID/AC_PID.cpp — AC_PID::update_all() (target/error filtering)</div>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <div class="group-label">inner loop — PID + FF</div>
+    <div class="stage purple">
+      <h3>Rate PID + feed-forward</h3>
+      <div class="paramgrid">
+        <param-row :p="p.ATC_STR_RAT_FF"></param-row>
+        <param-row :p="p.ATC_STR_RAT_D_FF"></param-row>
+        <param-row :p="p.ATC_STR_RAT_P"></param-row>
+        <param-row :p="p.ATC_STR_RAT_I"></param-row>
+        <param-row :p="p.ATC_STR_RAT_D"></param-row>
+        <param-row :p="p.ATC_STR_RAT_IMAX"></param-row>
+        <param-row :p="p.ATC_STR_RAT_PDMX"></param-row>
+      </div>
+      <div class="formula">P = err_f(rad/s) × RAT_P
+I += err_f × RAT_I × dt, clamped ±IMAX
+D = deriv(err_f) × RAT_D
+FF = tgt_f(rad/s) × RAT_FF + deriv(tgt_f) × RAT_D_FF
+PD = constrain(P + D, ±PDMX)
+out = PD + I + FF</div>
+      <div class="live">P≈<span class="lval">{{ fmt(pTerm,3) }}</span>, FF≈<span class="lval">{{ fmt(ffTerm,3) }}</span>, out(t≈0)≈<span class="lval">{{ fmt(outApprox,3) }}</span><span class="lnote">I=0, D=0 at t=0; err_f converted to rad/s</span></div>
+      <div class="src">Source: libraries/AC_PID/AC_PID.cpp — AC_PID::update_all(), get_p()/get_i()/get_d()/get_ff()</div>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <div class="group-label">output shaping</div>
+    <div class="stage amber">
+      <h3>Slew limit &amp; clamp</h3>
+      <div class="paramgrid">
+        <param-row :p="p.ATC_STR_RAT_SMAX"></param-row>
+      </div>
+      <div class="formula">max_step = ATC_STR_RAT_SMAX × dt
+out = slew_limit(out, prev, max_step)
+steer_out = constrain(out, -1, 1)</div>
+      <div class="live">steer_out (t≈0) = <span class="lval">{{ fmt(steerOut,3) }}</span><span class="lnote">SMAX=0 disables the slew limit</span></div>
+      <div class="src">Source: libraries/AC_PID/AC_PID.cpp — slew limiter<br>AR_AttitudeControl.cpp — get_steering_out_rate() final clamp</div>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <div class="group-label">output</div>
+    <div class="stage gray">
+      <h3>RCOUT / rudder servo</h3>
+      <div class="formula">scaled = steer_out × 4500              // internal command, range ±4500
+pwm_us = 1500 + (scaled / 4500) × 500  // servo endpoints ±500 from trim</div>
+      <div class="live">scaled = <span class="lval">{{ fmt(steerOut*4500,0) }}</span><span class="lnote">→ pwm ≈ {{ fmt(1500 + steerOut*500,0) }} µs</span></div>
+      <div class="desc">Assumes default channel trim 1500 µs and endpoints 1000/2000 µs (SERVOx_TRIM/MIN/MAX). A differently configured channel will scale to a different PWM range for the same ±4500 command.</div>
+      <div class="src">Source: libraries/SRV_Channel/SRV_Channel.cpp — SRV_Channels::set_output_scaled()<br>SRV_Channel::calc_pwm()</div>
+    </div>
+
+  </div>
+
+  <div class="notes">
+    <h4>Reading the diagram</h4>
+    <ul>
+      <li>Two nested loops: an <strong>outer angle loop</strong> (heading error → desired turn rate, gain <code>ATC_STR_ANG_P</code>) and an <strong>inner rate loop</strong> (PID + feed-forward tracking that turn-rate demand against measured yaw rate).</li>
+      <li>The live numbers under the PID and output stages are an instantaneous snapshot at t≈0 (integrator empty, no slew history) — they show direction and rough scale, not a settled trajectory.</li>
+      <li>Tuning order that generally works well: 1) get <code>ATC_STR_RAT_FF</code>/<code>P</code>/<code>D</code> tracking a rate step cleanly, 2) add <code>ATC_STR_RAT_I</code> to kill steady-state error, 3) raise <code>ATC_STR_ANG_P</code> for a crisper outer loop, 4) use <code>ACC_MAX</code>/<code>DEC_MAX</code> and <code>SMAX</code> to tame overshoot without detuning the PID itself.</li>
+    </ul>
+    <div class="caveat">Formulas, units, parameter ranges/defaults and source locations are reconstructed from ArduPilot Rover's <code>AR_AttitudeControl</code> / shared <code>AC_PID</code> conventions from memory, not pulled live from the source tree — cross-check against the parameter metadata for the firmware version you're actually flying.</div>
+  </div>
+  </section>
+
+  <section v-show="tab==='live'">
+    <p class="subtitle">Live telemetry streamed directly from the buttonbox's own firmware, which reads MAVLink off the ArduPilot serial link and re-broadcasts it over WebSocket. Connects automatically — nothing to run or configure.</p>
+
+    <div class="livebar">
+      <label class="desc">Window:</label>
+      <select v-model.number="liveWindowSec" class="wsinput" style="width:110px;">
+        <option :value="30">30 s</option>
+        <option :value="60">1 min</option>
+        <option :value="120">2 min</option>
+      </select>
+    </div>
+
+    <div class="chartcard">
+      <h4>Yaw / Heel / Speed</h4>
+      <div class="chartwrap tall"><canvas ref="lchYHS"></canvas></div>
+    </div>
+
+    <div class="chartcard">
+      <h4>Steering: target vs. actual</h4>
+      <div class="chartwrap"><canvas ref="lchSteer"></canvas></div>
+    </div>
+
+    <div class="chartcard">
+      <h4>PID terms</h4>
+      <div class="chartwrap"><canvas ref="lchPid"></canvas></div>
+    </div>
+
+    <div class="chartcard">
+      <h4>Position (XY track) <span class="desc">— same time window as above; requires GLOBAL_POSITION_INT (GPS fix)</span></h4>
+      <div class="chartwrap tall"><canvas ref="lchXY"></canvas></div>
+    </div>
+
+    <div class="chartcard">
+      <h4>Error &amp; rolling RMS <span class="desc">(= target − actual, computed here from the incoming Tar/Act stream)</span></h4>
+      <div class="chartwrap"><canvas ref="lchErr"></canvas></div>
+    </div>
+
+    <div class="chartcard">
+      <h4>RCOUT — steering channel (µs)</h4>
+      <div class="chartwrap"><canvas ref="lchRcout"></canvas></div>
+    </div>
+
+    <div class="notes">
+      <h4>About this page</h4>
+      <ul>
+        <li>Served directly by the buttonbox's ESP32 — this page and its telemetry feed both come from the boat's WiFi, no separate backend to run.</li>
+        <li><code>GCS_PID_MASK</code> (bit 0, Rover steering axis) is set automatically on boot so <code>PID_TUNING</code> data flows without manual setup.</li>
+        <li>The firmware re-reads the 17 tuning parameters every few seconds so the Signal Flow tab's steppers stay in sync with whatever's actually flashed, including changes made from another GCS.</li>
+      </ul>
+    </div>
+  </section>
+
+</div>
+
+<script>
+const { createApp, reactive, computed, ref, watch, onMounted, onBeforeUnmount } = Vue;
+
+const COLORS = {
+  yaw:'#1f77b4', heel:'#ff7f0e', speed:'#2ca02c',
+  tar:'#1f77b4', act:'#ff7f0e',
+  p:'#1f77b4', i:'#ff7f0e', d:'#2ca02c', ff:'#d62728',
+  err:'#f2a0a0', rms:'#111111', rcout:'#7f57c9', pos:'#d62728', track:'#1f77b4'
+};
+
+function mk(label, unit, min, max, step, def, note){
+  return { label, unit, min, max, step, def, value: def, focused: false, note: note || '', localEditAt: 0 };
+}
+
+const paramDefs = {
+  err_yaw:           mk('err_yaw',            'deg',   -180, 180, 1,    12),
+  speed:             mk('speed',              'm/s',   0,    10,  0.1,  2.0),
+  ATC_STR_ANG_P:     mk('ATC_STR_ANG_P',       '',      0.1,  10,  0.1,  2.0),
+  ACRO_TURN_RATE:    mk('ACRO_TURN_RATE',      'deg/s', 0,    360, 1,    180),
+  ATC_STR_RAT_MAX:   mk('ATC_STR_RAT_MAX',     'deg/s', 0,    1000,1,    0),
+  TURN_RADIUS:       mk('TURN_RADIUS',         'm',     0,    10,  0.1,  0.9),
+  ATC_STR_ACC_MAX:   mk('ATC_STR_ACC_MAX',     'deg/s²',0,    200, 1,    100),
+  ATC_STR_DEC_MAX:   mk('ATC_STR_DEC_MAX',     'deg/s²',0,    200, 1,    100),
+  ATC_STR_RAT_FLTT:  mk('ATC_STR_RAT_FLTT',    'Hz',    0,    100, 0.1,  10, 'target filter'),
+  ATC_STR_RAT_FLTE:  mk('ATC_STR_RAT_FLTE',    'Hz',    0,    100, 0.1,  10, 'error filter'),
+  ATC_STR_RAT_FLTD:  mk('ATC_STR_RAT_FLTD',    'Hz',    0,    100, 0.1,  10, 'D-term filter'),
+  ATC_STR_RAT_P:     mk('ATC_STR_RAT_P',       '',      0,    4,   0.05, 0.2),
+  ATC_STR_RAT_I:     mk('ATC_STR_RAT_I',       '',      0,    2,   0.05, 0.2),
+  ATC_STR_RAT_D:     mk('ATC_STR_RAT_D',       '',      0,    0.1, 0.001,0.005),
+  ATC_STR_RAT_FF:    mk('ATC_STR_RAT_FF',      '',      0,    3,   0.05, 0.2),
+  ATC_STR_RAT_D_FF:  mk('ATC_STR_RAT_D_FF',    '',      0,    0.5, 0.01, 0),
+  ATC_STR_RAT_IMAX:  mk('ATC_STR_RAT_IMAX',    '',      0,    1,   0.05, 1.0),
+  ATC_STR_RAT_PDMX:  mk('ATC_STR_RAT_PDMX',    '',      0,    1,   0.05, 0),
+  ATC_STR_RAT_SMAX:  mk('ATC_STR_RAT_SMAX',    '1/s',   0,    200, 5,    0),
+};
+
+const ParamRow = {
+  props: ['p'],
+  template: `
+    <div class="paramrow">
+      <span class="plabel">{{ p.label }}</span>
+      <div class="stepper">
+        <button type="button" @click="dec" aria-label="decrease">−</button>
+        <input type="number" :min="p.min" :max="p.max" :step="p.step"
+               v-model.number="p.value" @change="clampNow" @focus="p.focused=true" @blur="p.focused=false; clampNow()">
+        <button type="button" @click="inc" aria-label="increase">+</button>
+      </div>
+      <span class="punit">{{ p.unit }}</span>
+      <span class="prange">[{{ p.min }}–{{ p.max }}]</span>
+      <span class="pnote" v-if="p.note">{{ p.note }}</span>
+    </div>
+  `,
+  methods: {
+    decimals(step){
+      const s = String(step);
+      const i = s.indexOf('.');
+      return i === -1 ? 0 : s.length - i - 1;
+    },
+    round(v){
+      const d = this.decimals(this.p.step);
+      return Math.round(v * Math.pow(10,d)) / Math.pow(10,d);
+    },
+    clampNow(){
+      let v = this.p.value;
+      if (typeof v !== 'number' || isNaN(v)) v = this.p.def;
+      v = Math.min(this.p.max, Math.max(this.p.min, v));
+      this.p.value = this.round(v);
+      this.p.localEditAt = Date.now();
+    },
+    inc(){ this.p.value = this.round(Math.min(this.p.max, (this.p.value||0) + this.p.step)); this.p.localEditAt = Date.now(); },
+    dec(){ this.p.value = this.round(Math.max(this.p.min, (this.p.value||0) - this.p.step)); this.p.localEditAt = Date.now(); }
+  }
+};
+
+function buildChart(canvas, extraScales, windowSec){
+  const styles = getComputedStyle(document.documentElement);
+  const ink = styles.getPropertyValue('--ink').trim() || '#222';
+  const sub = styles.getPropertyValue('--sub').trim() || '#666';
+  const grid = styles.getPropertyValue('--line').trim() || '#ddd';
+  extraScales = extraScales || {};
+  const baseX = {
+    type:'linear', min:0, max: windowSec || 60,
+    title:{display:true,text:'t [s]'},
+    ticks:{ color:sub, font:{size:10}, maxTicksLimit:8, precision:0, callback:(v)=>Math.round(v) },
+    grid:{ color:grid }
+  };
+  const baseY = { ticks:{ color:sub, font:{size:10} }, grid:{ color:grid } };
+  const scales = { x: Object.assign({}, baseX, extraScales.x || {}) };
+  Object.keys(extraScales).forEach(k => {
+    if(k === 'x') return;
+    scales[k] = Object.assign({}, baseY, extraScales[k]);
+  });
+  if(!scales.y) scales.y = baseY;
+
+  return new Chart(canvas.getContext('2d'), {
+    type:'line',
+    data:{ datasets:[] },
+    options:{
+      responsive:true, maintainAspectRatio:false, animation:false,
+      interaction:{mode:'nearest', intersect:false},
+      elements:{ point:{radius:0}, line:{borderWidth:1.6, tension:0.15} },
+      plugins:{ legend:{ labels:{ color:ink, boxWidth:14, font:{size:11} } } },
+      scales
+    }
+  });
+}
+
+function buildXYChart(canvas){
+  const styles = getComputedStyle(document.documentElement);
+  const ink = styles.getPropertyValue('--ink').trim() || '#222';
+  const sub = styles.getPropertyValue('--sub').trim() || '#666';
+  const grid = styles.getPropertyValue('--line').trim() || '#ddd';
+  return new Chart(canvas.getContext('2d'), {
+    type:'scatter',
+    data:{ datasets:[
+      {
+        label:'Track', data:[], showLine:true,
+        borderColor:COLORS.track, backgroundColor:COLORS.track,
+        borderWidth:2, pointRadius:0
+      },
+      {label:'Current position', data:[], showLine:false, borderColor:COLORS.pos, backgroundColor:COLORS.pos, pointRadius:6}
+    ]},
+    options:{
+      responsive:true, maintainAspectRatio:false, animation:false,
+      plugins:{ legend:{ labels:{ color:ink, boxWidth:14, font:{size:11} } } },
+      scales:{
+        x:{ type:'linear', title:{display:true,text:'East [m]'}, ticks:{color:sub, font:{size:10}}, grid:{color:grid} },
+        y:{ type:'linear', title:{display:true,text:'North [m]'}, ticks:{color:sub, font:{size:10}}, grid:{color:grid} }
+      }
+    }
+  });
+}
+
+const D2R = Math.PI/180;
+const HARD_CAP = 6000; // raw sample cap, independent of the display window
+
+createApp({
+  components: { ParamRow },
+  setup(){
+    const tab = ref('live');
+    const p = reactive(paramDefs);
+
+    // ---- Signal Flow tab: instantaneous (t≈0) approximation ----
+    const desiredRateAngle = computed(() => p.err_yaw.value * p.ATC_STR_ANG_P.value);
+    const rateLimit = computed(() => {
+      const candidates = [];
+      if (p.ACRO_TURN_RATE.value > 0) candidates.push(p.ACRO_TURN_RATE.value);
+      if (p.ATC_STR_RAT_MAX.value > 0) candidates.push(p.ATC_STR_RAT_MAX.value);
+      if (p.TURN_RADIUS.value > 0) candidates.push((p.speed.value / p.TURN_RADIUS.value) / D2R);
+      return candidates.length ? Math.min(...candidates) : Infinity;
+    });
+    const desiredRateClamped = computed(() => {
+      const r = rateLimit.value;
+      if (!isFinite(r)) return desiredRateAngle.value;
+      return Math.max(-r, Math.min(r, desiredRateAngle.value));
+    });
+    const errFRad = computed(() => desiredRateClamped.value * D2R);
+    const pTerm = computed(() => errFRad.value * p.ATC_STR_RAT_P.value);
+    const ffTerm = computed(() => errFRad.value * p.ATC_STR_RAT_FF.value);
+    const pdClamped = computed(() => {
+      const pdmx = p.ATC_STR_RAT_PDMX.value;
+      if (!pdmx) return pTerm.value;
+      return Math.max(-pdmx, Math.min(pdmx, pTerm.value));
+    });
+    const outApprox = computed(() => pdClamped.value + ffTerm.value);
+    const steerOut = computed(() => Math.max(-1, Math.min(1, outApprox.value)));
+
+    function fmt(v, decimals){
+      if (v===undefined || v===null || !isFinite(v)) return '∞';
+      return v.toFixed(decimals);
+    }
+    function resetAll(){
+      Object.values(p).forEach(param => { param.value = param.def; });
+    }
+
+    // ---- Live Telemetry tab ----
+    const wsConnected = ref(false);
+    const wsStatusText = ref('connecting…');
+    const liveWindowSec = ref(60);
+    const lastParamSync = ref(null);
+    const nowTick = ref(Date.now());
+    let tickTimer = setInterval(() => { nowTick.value = Date.now(); }, 1000);
+    const paramsAgeSec = computed(() => lastParamSync.value ? (nowTick.value - lastParamSync.value)/1000 : null);
+    let ws = null;
+
+    const buf = { t:[], yaw:[], heel:[], spd:[], tar:[], act:[], err:[], rms:[], P:[], I:[], D:[], FF:[], rcout:[] };
+    const track = []; // {x:east, y:north, t}, windowed the same as everything else
+    const lchYHS=ref(null), lchSteer=ref(null), lchPid=ref(null), lchErr=ref(null), lchRcout=ref(null), lchXY=ref(null);
+    let charts = {};
+    let chartsDirty = false;
+
+    function pushCap(arr, v){ arr.push(v); if(arr.length>HARD_CAP) arr.shift(); }
+
+    const LOCAL_EDIT_GRACE_MS = 8000; // don't let a live sync clobber a value you just touched
+
+    function applyParams(params){
+      if(!params) return;
+      if(Object.keys(params).length === 0) return;
+      // "synced Xs ago" should reflect that the backend is still actively
+      // polling the vehicle, not "the last time a value happened to differ" —
+      // otherwise, once everything matches, the age climbs forever even
+      // though sync is working fine.
+      lastParamSync.value = Date.now();
+      Object.keys(params).forEach(name => {
+        const param = p[name];
+        if(!param) return;
+        if(param.focused) return; // actively typing right now
+        if(Date.now() - param.localEditAt < LOCAL_EDIT_GRACE_MS) return; // just touched via steppers/typing
+        const v = Math.max(param.min, Math.min(param.max, params[name]));
+        if(Math.abs(param.value - v) > 1e-9){
+          param.value = v;
+        }
+      });
+    }
+
+    function handleMessage(ev){
+      let d;
+      try { d = JSON.parse(ev.data); } catch(e){ return; }
+      const err = (d.pid?.tar ?? 0) - (d.pid?.act ?? 0);
+      const t = d.t; // full precision — rounding this was what made the scroll look stepped
+      pushCap(buf.t, t);
+      pushCap(buf.yaw, d.yaw);
+      pushCap(buf.heel, d.heel);
+      pushCap(buf.spd, d.speed_kn);
+      pushCap(buf.tar, d.pid?.tar ?? 0);
+      pushCap(buf.act, d.pid?.act ?? 0);
+      pushCap(buf.err, err);
+      const win = buf.err.slice(-10);
+      pushCap(buf.rms, Math.sqrt(win.reduce((a,b)=>a+b*b,0)/win.length));
+      pushCap(buf.P, d.pid?.P ?? 0);
+      pushCap(buf.I, d.pid?.I ?? 0);
+      pushCap(buf.D, d.pid?.D ?? 0);
+      pushCap(buf.FF, d.pid?.FF ?? 0);
+      pushCap(buf.rcout, d.rcout_us ?? 1500);
+      if(d.pos){
+        track.push({x:d.pos.east, y:d.pos.north, t});
+        if(track.length>HARD_CAP) track.shift();
+      }
+      applyParams(d.params);
+      chartsDirty = true; // actual chart redraw happens in the rAF render loop below
+    }
+
+    function windowStartIdx(){
+      if(!buf.t.length) return 0;
+      const latest = buf.t[buf.t.length-1];
+      const cutoff = latest - liveWindowSec.value;
+      const idx = buf.t.findIndex(v => v >= cutoff);
+      return idx === -1 ? 0 : idx;
+    }
+
+    function refreshCharts(){
+      const start = windowStartIdx();
+      const tsub = buf.t.slice(start);
+      const latest = buf.t.length ? buf.t[buf.t.length-1] : liveWindowSec.value;
+      const xmin = latest - liveWindowSec.value;
+      const xmax = latest;
+      const zip = (arr) => tsub.map((tv, i) => ({ x: tv, y: arr[start + i] }));
+
+      const setX = (chart) => { chart.options.scales.x.min = xmin; chart.options.scales.x.max = xmax; };
+
+      if(charts.yhs){
+        setX(charts.yhs);
+        charts.yhs.data.datasets[0].data = zip(buf.yaw);
+        charts.yhs.data.datasets[1].data = zip(buf.heel);
+        charts.yhs.data.datasets[2].data = zip(buf.spd);
+        charts.yhs.update('none');
+      }
+      if(charts.steer){
+        setX(charts.steer);
+        charts.steer.data.datasets[0].data = zip(buf.tar);
+        charts.steer.data.datasets[1].data = zip(buf.act);
+        charts.steer.update('none');
+      }
+      if(charts.pid){
+        setX(charts.pid);
+        charts.pid.data.datasets[0].data = zip(buf.P);
+        charts.pid.data.datasets[1].data = zip(buf.I);
+        charts.pid.data.datasets[2].data = zip(buf.D);
+        charts.pid.data.datasets[3].data = zip(buf.FF);
+        charts.pid.update('none');
+      }
+      if(charts.err){
+        setX(charts.err);
+        charts.err.data.datasets[0].data = zip(buf.err);
+        charts.err.data.datasets[1].data = zip(buf.rms);
+        charts.err.update('none');
+      }
+      if(charts.rcout){
+        setX(charts.rcout);
+        charts.rcout.data.datasets[0].data = zip(buf.rcout);
+        charts.rcout.update('none');
+      }
+      if(charts.xy){
+        const cutoff = latest - liveWindowSec.value;
+        const windowed = track.filter(pt => pt.t >= cutoff);
+        charts.xy.data.datasets[0].data = windowed;
+        charts.xy.data.datasets[1].data = windowed.length ? [windowed[windowed.length-1]] : [];
+        charts.xy.update('none');
+      }
+    }
+
+    // Render as soon as new data arrives, at the browser's own refresh cadence
+    // — smoother than a fixed-interval timer, and no longer expensive now
+    // that unrelated params-tab reactivity isn't firing on every message.
+    let rafActive = true;
+    function renderLoop(){
+      if(chartsDirty){ chartsDirty = false; refreshCharts(); }
+      if(rafActive) requestAnimationFrame(renderLoop);
+    }
+    requestAnimationFrame(renderLoop);
+
+    watch(liveWindowSec, refreshCharts);
+
+    const RECONNECT_DELAY_MS = 2000;
+    let reconnectTimer = null;
+
+    function telemetryWsUrl(){
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${proto}//${location.hostname}:81/`;
+    }
+
+    function connectWs(){
+      clearTimeout(reconnectTimer);
+      wsStatusText.value = 'connecting…';
+      ws = new WebSocket(telemetryWsUrl());
+      ws.onopen = () => { wsConnected.value = true; wsStatusText.value = 'connected'; };
+      ws.onclose = () => {
+        wsConnected.value = false;
+        wsStatusText.value = 'disconnected — retrying…';
+        reconnectTimer = setTimeout(connectWs, RECONNECT_DELAY_MS);
+      };
+      ws.onerror = () => { wsStatusText.value = 'connection error, retrying…'; };
+      ws.onmessage = handleMessage;
+    }
+
+    onMounted(() => {
+      const w = liveWindowSec.value;
+      charts.yhs = buildChart(lchYHS.value,
+        {
+          y:  { min:0, max:360, title:{display:true,text:'deg (yaw)'} },
+          y1: { position:'right', min:-30, max:30, grid:{drawOnChartArea:false}, title:{display:true,text:'deg (heel)'} },
+          y2: { position:'right', min:0, max:7, grid:{drawOnChartArea:false}, title:{display:true,text:'kn'} }
+        },
+        w
+      );
+      charts.yhs.data.datasets = [
+        {label:'Yaw (heading) [deg]', data:[], borderColor:COLORS.yaw, yAxisID:'y'},
+        {label:'Heel (roll) [deg]', data:[], borderColor:COLORS.heel, yAxisID:'y1'},
+        {label:'Speed [kn]', data:[], borderColor:COLORS.speed, yAxisID:'y2'}
+      ];
+      charts.yhs.update();
+
+      charts.steer = buildChart(lchSteer.value, {}, w);
+      charts.steer.data.datasets = [
+        {label:'Tar', data:[], borderColor:COLORS.tar, fill:1, backgroundColor:'rgba(150,150,150,0.3)'},
+        {label:'Act', data:[], borderColor:COLORS.act}
+      ];
+      charts.steer.update();
+
+      charts.pid = buildChart(lchPid.value, { y:{min:-1, max:1} }, w);
+      charts.pid.data.datasets = [
+        {label:'P', data:[], borderColor:COLORS.p},
+        {label:'I', data:[], borderColor:COLORS.i},
+        {label:'D', data:[], borderColor:COLORS.d},
+        {label:'FF', data:[], borderColor:COLORS.ff}
+      ];
+      charts.pid.update();
+
+      charts.err = buildChart(lchErr.value, {}, w);
+      charts.err.data.datasets = [
+        {label:'Err', data:[], borderColor:COLORS.err, borderWidth:1},
+        {label:'rolling RMS(Err)', data:[], borderColor:COLORS.rms, borderWidth:2}
+      ];
+      charts.err.update();
+
+      charts.rcout = buildChart(lchRcout.value,
+        { y:{min:1000, max:2000, title:{display:true,text:'µs'}} },
+        w
+      );
+      charts.rcout.data.datasets = [
+        {label:'RCOUT steering [µs]', data:[], borderColor:COLORS.rcout}
+      ];
+      charts.rcout.update();
+
+      charts.xy = buildXYChart(lchXY.value);
+
+      connectWs();
+    });
+
+    onBeforeUnmount(() => {
+      clearTimeout(reconnectTimer);
+      ws && ws.close();
+      clearInterval(tickTimer);
+      rafActive = false;
+    });
+
+    return {
+      tab, p, fmt, resetAll,
+      desiredRateAngle, rateLimit, desiredRateClamped, pTerm, ffTerm, outApprox, steerOut,
+      wsConnected, wsStatusText,
+      liveWindowSec, lastParamSync, paramsAgeSec,
+      lchYHS, lchSteer, lchPid, lchErr, lchRcout, lchXY
+    };
+  }
+}).component('param-row', ParamRow).mount('#app');
+</script>
+</body>
+</html>

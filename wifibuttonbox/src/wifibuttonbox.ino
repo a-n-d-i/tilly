@@ -9,9 +9,10 @@
 
 #define TILLY_DISPLAY
 
-#include "display.c"
+#include "display.h"
 #include "mavlink_nmea_bridge.h"
 #include "opencpn_bridge.h"
+#include "web_telemetry.h"
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
@@ -21,6 +22,7 @@
 // https://github.com/okalachev/mavlink-arduino
 
 #include <ArduinoOTA.h>  // For enabling over the air updates
+#include <SPIFFS.h>
 
 #define TFT_BACKGROUND 5
 
@@ -105,9 +107,9 @@ void setup() {
         type = "sketch";
       } else {  // U_SPIFFS
         type = "filesystem";
+        SPIFFS.end(); // unmount so the OTA write isn't racing our own mount
       }
 
-      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
       Serial.println("Start updating " + type);
     })
     .onEnd([]() {
@@ -175,13 +177,14 @@ void setup() {
     
     // Start UDP
     udp.begin(udpPort);
-    //Serial.printf("UDP listening on port %d\n", udpPort);
+    Serial.printf("UDP listening on port %d\n", udpPort);
   }
 
   mavNmeaBridge_setup(ArduPilotSerial, udp, remoteIP, NMEA_UDP_PORT);
 
   if (wifi == true) {
     opencpnBridge_setup(OPENCPN_AP_UDP_PORT);
+    webTelemetry_setup(ArduPilotSerial);
   }
 
   #ifdef TILLY_DISPLAY
@@ -191,11 +194,13 @@ void setup() {
   Serial.println("Display initialized");
   #endif
 
-  requestMessageStream(MAVLINK_MSG_ID_GPS_INPUT);
   requestMessageStream(MAVLINK_MSG_ID_GLOBAL_POSITION_INT);
   requestMessageStream(MAVLINK_MSG_ID_GPS_RAW_INT);
   requestMessageStream(MAVLINK_MSG_ID_SYSTEM_TIME);
   requestMessageStream(MAVLINK_MSG_ID_VFR_HUD);
+  requestMessageStream(MAVLINK_MSG_ID_ATTITUDE);
+  requestMessageStream(MAVLINK_MSG_ID_PID_TUNING);
+  requestMessageStream(MAVLINK_MSG_ID_SERVO_OUTPUT_RAW);
   
   
   sendArmCommand();
@@ -290,6 +295,9 @@ void handleButtons(){
       sendCustomEvent(buf);
     }
 
+    
+    
+
     if (desired_heading > 359) {
       desired_heading -= 360;
     }
@@ -364,15 +372,6 @@ void loop() {
            // Build the raw MAVLink packet for forwarding
             uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
             uint16_t len = mavlink_msg_to_send_buffer(buffer, &msg);
-
-            // TODO: decide whether package is for us or someone else?...
-            if (wifi == true) {
-              // Send via UDP
-              udp.beginPacket(remoteIP, remotePort);
-              udp.write(buffer, len);
-              udp.endPacket();
-            }
-
             
             if (msg.msgid == MAVLINK_MSG_ID_VFR_HUD) {
                 mavlink_vfr_hud_t hud;
@@ -447,7 +446,8 @@ void loop() {
             
           }
           // update the nmea bridge
-          handleMavMessage(msg);                 
+          handleMavMessage(msg);
+          if (wifi == true) webTelemetry_handleMavMessage(msg);
           break;
 
         }
@@ -455,24 +455,7 @@ void loop() {
     }
 
    yield();
-
-  // ---------------------------
-  // UDP → Serial
-  // ---------------------------
-
-  if (wifi == true) {
-    int packetSize = udp.parsePacket();
-    if (packetSize) {
   
-      // Read UDP packet
-      uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-      udp.read(buf, MAVLINK_MAX_PACKET_LEN);
-      ArduPilotSerial.write(buf, packetSize);
-    }
-  }
-  
-  yield();
-
   // GUIDED Mode needs updates at least every three seconds or it stops
   if ((pilotMode == AUTO) && (millis() - lastMavlinkUpdate >  mavlinkUpdateInterval)) {
       sendYawCommandDeg(ArduPilotSerial, 1, 1, desired_heading);
@@ -481,7 +464,8 @@ void loop() {
 
   mavNmeaBridge_update();
   opencpnBridge_update();
-  
+  if (wifi == true) webTelemetry_update();
+
   #ifdef TILLY_DISPLAY
   // Update displays
   if (millis() - lastDisplayUpdate > displayUpdateInterval) {
@@ -604,23 +588,23 @@ void sendYawCommandDeg(Stream &serial, uint8_t target_system, uint8_t target_com
 }
 
 
-// TODO: Actually use Parameter
+// Asks the autopilot to stream the given message at 10 Hz via
+// MAV_CMD_SET_MESSAGE_INTERVAL (modern ArduPilot).
 void requestMessageStream(uint8_t message_number) {
     mavlink_message_t msg;
 
-    // Send REQUEST_DATA_STREAM
-    mavlink_msg_request_data_stream_pack(
-        255,  // sender system (255 = GCS/this device)
-        0,    // sender component
+    mavlink_msg_command_long_pack(
+        250,          // system ID
+        1,            // component ID
         &msg,
-        1,
-        1,
-        MAVLINK_MSG_ID_GPS_INPUT, 
-        1,    // message rate (1 Hz)
-        1     // start streaming
-    );
+        1,            // target system
+        1,            // target component
+        MAV_CMD_SET_MESSAGE_INTERVAL,
+        0,               // confirmation
+        message_number,  // param1: message ID to configure
+        100000,          // param2: interval in microseconds (10 Hz)
+        0, 0, 0, 0, 0);  // param3-7: unused
 
-    // Serialize and send
     uint8_t buf[MAVLINK_MAX_PACKET_LEN];
     uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
     ArduPilotSerial.write(buf, len);

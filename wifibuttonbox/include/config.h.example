@@ -4,7 +4,7 @@
  * Instructions:
  * 1. Copy this file and rename it to "config.h"
  * 2. Update the values below with your WiFi credentials and network settings
- * 3. Place config.h in the same folder as your main .ino sketch
+ * 3. Place config.h in this same "include" folder
  * 4. Add config.h to your .gitignore if using version control
  */
 
