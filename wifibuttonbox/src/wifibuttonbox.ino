@@ -1,8 +1,10 @@
 /*
  * Primers
- * 
- * This has no error handling yet. It's all fire and forget.
- * How long do the acks take, maybe just active wait since esp stuff continus running in the background?
+ *
+ * MAVLink writes are now length-checked (sendMavlink()) and ARM/mode-change
+ * commands wait for COMMAND_ACK before pilotMode/the display believe they
+ * took effect (see PendingModeCmd) - other commands (RC override, yaw
+ * setpoints, stream-rate requests) are still fire-and-forget.
  * It also has no notion of multitasking or async. The slow display blocks everything.
  * Why am I doing this in arduino again?
  */
@@ -75,6 +77,15 @@ enum pilotModeType {STANDBY, AUTO};
 
 pilotModeType pilotMode = STANDBY;
 
+// pilotMode/the display only flip once ArduPilot's COMMAND_ACK confirms the
+// mode change - entering GUIDED requires a good EKF position estimate
+// whenever the vehicle is already armed (see Rover's Mode::enter()), so a
+// mode request can be silently rejected and we don't want to lie about it.
+enum class PendingModeCmd { NONE, GUIDED, MANUAL };
+PendingModeCmd pendingModeCmd = PendingModeCmd::NONE;
+uint32_t pendingModeCmdSentMs = 0;
+const uint32_t commandAckTimeoutMs = 2000;
+
 #ifdef TILLY_DISPLAY
 TillyDisplayState displayState;
 bool showLogScreen = false;  // toggled by holding buttons 5+6 together
@@ -106,6 +117,14 @@ static bool sendMavlink(Stream &serial, const mavlink_message_t &msg) {
   }
   return true;
 }
+
+// setup()-only: logs a line and immediately redraws the fullscreen log view,
+// so boot progress is visible live on the display before the normal
+// telemetry screen takes over. Don't use this outside setup() - it would
+// yank whoever's looking at the normal screen or the PID/heading readout
+// into the log view on every call. (TILLY_DISPLAY is always defined at the
+// top of this file - this project has no non-display build.)
+#define BOOT_LOG(...) do { appLog(__VA_ARGS__); updateTillyLogScreen(); } while (0)
 
 void setup() {
   
@@ -145,20 +164,20 @@ void setup() {
   initTillyDisplay();
   #endif
 
-  appLog("Tillys little helper");
+  BOOT_LOG("Tillys little helper");
 
   // Initialize ArduPilot Serial
   ArduPilotSerial.begin(115200, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
-  appLog("ArduPilot Serial initialized");
+  BOOT_LOG("ArduPilot Serial initialized");
 
   buttonBox.begin();
-  appLog("Buttons initialized");
+  BOOT_LOG("Buttons initialized");
 
 
   // Connect to WiFi
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-  appLog("Connecting to WiFi...");
+  BOOT_LOG("Connecting to WiFi...");
 
   int wifiTimeout = millis() + 30000;
 
@@ -171,24 +190,33 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     wifi = true;
     Serial.println();
-    appLog("WiFi connected, IP %s", WiFi.localIP().toString().c_str());
+    BOOT_LOG("WiFi connected, IP %s", WiFi.localIP().toString().c_str());
     computeBroadcastAddress();
+    #ifdef TILLY_DISPLAY
+    updateTillyLogScreen();
+    #endif
 
     ArduinoOTA.begin();  // Starts OTA
 
     // Start UDP
     udp.begin(udpPort);
-    appLog("UDP listening on port %d", udpPort);
+    BOOT_LOG("UDP listening on port %d", udpPort);
   } else {
     Serial.println();
-    appLog("WiFi connect timed out");
+    BOOT_LOG("WiFi connect timed out");
   }
 
   mavNmeaBridge_setup(ArduPilotSerial, udp, remoteIP, NMEA_UDP_PORT);
+  #ifdef TILLY_DISPLAY
+  updateTillyLogScreen();
+  #endif
 
   if (wifi == true) {
     opencpnBridge_setup(OPENCPN_AP_UDP_PORT);
     webTelemetry_setup(ArduPilotSerial);
+    #ifdef TILLY_DISPLAY
+    updateTillyLogScreen();
+    #endif
   }
 
   requestMessageStream(MAVLINK_MSG_ID_GLOBAL_POSITION_INT);
@@ -199,9 +227,16 @@ void setup() {
   requestMessageStream(MAVLINK_MSG_ID_ATTITUDE);
   requestMessageStream(MAVLINK_MSG_ID_PID_TUNING);
   requestMessageStream(MAVLINK_MSG_ID_SERVO_OUTPUT_RAW);
-  
-  
+
+
   sendArmCommand();
+
+  #ifdef TILLY_DISPLAY
+  updateTillyLogScreen();
+  delay(1000);  // let the last boot lines stay readable for a moment
+  displayState.wifiOk = wifi;
+  updateTillyDisplay(displayState);  // hand off to the normal view
+  #endif
 }
 
 // Sends a custom "event" as a STATUSTEXT. Text field is max 50 chars (MAVLink2).
@@ -255,22 +290,22 @@ void handleButtons(){
 
     switch (ev.mask) {
       case 1 << 0:  // button 1: Auto
-        if (pilotMode == STANDBY) {
-          pilotMode = AUTO;
-          desired_heading = current_heading;
-          appLog("Auto");
+        if (pilotMode == STANDBY && pendingModeCmd == PendingModeCmd::NONE) {
+          appLog("Auto: requesting GUIDED mode");
           setGuidedMode();
           // TODO: don't do this every time?
           sendArmCommand();
+          pendingModeCmd = PendingModeCmd::GUIDED;
+          pendingModeCmdSentMs = millis();
         }
         break;
 
       case 1 << 1:  // button 2: Standby
-        if (pilotMode == AUTO) {
-          pilotMode = STANDBY;
-          standby_ram_position = 1500;
-          appLog("Standby");
+        if (pilotMode == AUTO && pendingModeCmd == PendingModeCmd::NONE) {
+          appLog("Standby: requesting MANUAL mode");
           setManualMode();
+          pendingModeCmd = PendingModeCmd::MANUAL;
+          pendingModeCmdSentMs = millis();
         }
         break;
 
@@ -335,6 +370,12 @@ void loop() {
                 mavlink_sys_status_t sys;
                 mavlink_msg_sys_status_decode(&msg, &sys);
                 displayState.magOk = (sys.onboard_control_sensors_health & MAV_SYS_STATUS_SENSOR_3D_MAG) != 0;
+                if (sys.voltage_battery != UINT16_MAX) {
+                  displayState.batteryVolts = sys.voltage_battery / 1000.0f;
+                }
+                if (sys.current_battery != -1) {
+                  displayState.batteryAmps = sys.current_battery / 100.0f;
+                }
             }
 
             // sysid 1 only - a GCS sharing this link (e.g. MAVProxy) sends its
@@ -343,6 +384,48 @@ void loop() {
                 mavlink_heartbeat_t hb;
                 mavlink_msg_heartbeat_decode(&msg, &hb);
                 displayState.armed = (hb.base_mode & MAV_MODE_FLAG_SAFETY_ARMED) != 0;
+            }
+            #endif
+
+            // target_system 250 matches the sysid we send commands under
+            // (see sendModeCommand()/sendArmCommand()) - ignore acks aimed
+            // at other senders sharing this link (e.g. MAVProxy).
+            if (msg.msgid == MAVLINK_MSG_ID_COMMAND_ACK && msg.sysid == 1) {
+                mavlink_command_ack_t ack;
+                mavlink_msg_command_ack_decode(&msg, &ack);
+                if (ack.target_system == 250) {
+                  if (ack.command == MAV_CMD_DO_SET_MODE && pendingModeCmd != PendingModeCmd::NONE) {
+                    if (ack.result == MAV_RESULT_ACCEPTED) {
+                      if (pendingModeCmd == PendingModeCmd::GUIDED) {
+                        pilotMode = AUTO;
+                        desired_heading = current_heading;
+                        appLog("Auto: GUIDED mode confirmed");
+                      } else {
+                        pilotMode = STANDBY;
+                        standby_ram_position = 1500;
+                        appLog("Standby: MANUAL mode confirmed");
+                      }
+                    } else {
+                      appLog("Mode change rejected: MAV_RESULT %u", ack.result);
+                    }
+                    pendingModeCmd = PendingModeCmd::NONE;
+                  } else if (ack.command == MAV_CMD_COMPONENT_ARM_DISARM) {
+                    if (ack.result == MAV_RESULT_ACCEPTED) {
+                      appLog("Arm/disarm confirmed");
+                    } else {
+                      appLog("Arm/disarm rejected: MAV_RESULT %u", ack.result);
+                    }
+                  }
+                }
+            }
+
+            #ifdef TILLY_DISPLAY
+
+            if (msg.msgid == MAVLINK_MSG_ID_GLOBAL_POSITION_INT) {
+                mavlink_global_position_int_t pos;
+                mavlink_msg_global_position_int_decode(&msg, &pos);
+                displayState.lat = pos.lat / 1e7;
+                displayState.lon = pos.lon / 1e7;
             }
 
             if (msg.msgid == MAVLINK_MSG_ID_PID_TUNING) {
@@ -372,8 +455,21 @@ void loop() {
             mavlink_msg_gps_raw_int_decode(&msg, &gps_status);
             #ifdef TILLY_DISPLAY
             displayState.sats = gps_status.satellites_visible;
+            if (gps_status.cog != UINT16_MAX) {
+              displayState.cogDeg = gps_status.cog / 100.0f;
+            }
             #endif
           }
+
+          #ifdef TILLY_DISPLAY
+          if (msg.msgid == MAVLINK_MSG_ID_SYSTEM_TIME) {
+            mavlink_system_time_t sysTime;
+            mavlink_msg_system_time_decode(&msg, &sysTime);
+            if (sysTime.time_unix_usec != 0) {
+              displayState.unixTimeSec = sysTime.time_unix_usec / 1000000ULL;
+            }
+          }
+          #endif
           // update the nmea bridge
           handleMavMessage(msg);
           if (wifi == true) webTelemetry_handleMavMessage(msg);
@@ -384,7 +480,12 @@ void loop() {
     }
 
    yield();
-  
+
+  if (pendingModeCmd != PendingModeCmd::NONE && (millis() - pendingModeCmdSentMs > commandAckTimeoutMs)) {
+    appLog("Mode change: no ack received, timed out");
+    pendingModeCmd = PendingModeCmd::NONE;
+  }
+
   // GUIDED Mode needs updates at least every three seconds or it stops
   if ((pilotMode == AUTO) && (millis() - lastMavlinkUpdate >  mavlinkUpdateInterval)) {
       sendYawCommandDeg(ArduPilotSerial, 1, 1, desired_heading);
@@ -403,6 +504,7 @@ void loop() {
     } else {
       displayState.autoMode = (pilotMode == AUTO);
       displayState.desHeading = desired_heading;
+      displayState.wifiOk = wifi;
       updateTillyDisplay(displayState);
     }
   }
