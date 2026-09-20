@@ -80,27 +80,35 @@ static void parseAPB(const String &body) {
   int n = splitFields(body, f, 16);
   if (n < 12) return;
 
-  bool loranValid = (f[1] == "A");
-  bool cycleValid  = (f[2] == "A");
-  if (!loranValid || !cycleValid) return; // sentence itself flags data invalid
-
+  // f[1]/f[2] (LORAN-C blink/cycle-lock warning flags) are dead - not parsed.
   s_xteNm = f[3].toFloat();
   s_steerDir = f[4].length() ? f[4][0] : 'R';
   // f[5] is XTE units, normally "N" for nautical miles - assumed.
-  s_bearingToWpDeg = f[11].toFloat(); // field 11: bearing, present pos to destination, true
+  s_bearingToWpDeg = f[11].toFloat(); // field 11: bearing, present pos to destination
+  char bearingRef = (n >= 13 && f[12].length()) ? f[12][0] : '?'; // field 12: M/T for field 11
 
   s_haveDirectHeading = false;
+  char headingRef = '?';
   if (n >= 14 && f[13].length() > 0) {
     s_directHeadingDeg = f[13].toFloat(); // field 13: heading to steer to destination
     s_haveDirectHeading = true;
+    if (n >= 15 && f[14].length() > 0) headingRef = f[14][0]; // field 14: M/T for field 13
   }
+
+  float usedHeading = s_haveDirectHeading ? s_directHeadingDeg : s_bearingToWpDeg;
+  char usedRef = s_haveDirectHeading ? headingRef : bearingRef;  // 'T' true, 'M' magnetic
+  appLog("APB: hdg %.1f (%c) xte %.2fnm %c", usedHeading, usedRef, s_xteNm, s_steerDir);
 
   s_navValid = true;
   s_lastNavUpdateMs = millis();
 }
 
 static void handleNmeaLine(String line) {
-  if (!verifyAndStripChecksum(line)) return; // silently drop malformed/corrupt sentences
+  bool looksLikeApb = line.indexOf("APB") >= 0;
+  if (!verifyAndStripChecksum(line)) {
+    if (looksLikeApb) appLog("APB checksum fail, dropped: %s", line.c_str());
+    return;
+  }
   if (line.length() < 6) return;
 
   String type = line.substring(3, 6); // skip '$' + 2-char talker ID
@@ -136,6 +144,7 @@ static float computeSteerToHeading() {
 void opencpnBridge_setup(uint16_t listenPort) {
   s_listenPort = listenPort;
   s_lastBindAttemptMs = millis();
+  s_lastNavUpdateMs = millis();  // avoid a stale 0 sentinel, even though s_navValid gates its use
   s_socketReady = s_udpIn.begin(s_listenPort) != 0;
   if (s_socketReady) {
     appLog("OpenCPN autopilot bridge listening on UDP %d", s_listenPort);
@@ -186,6 +195,12 @@ void opencpnBridge_update() {
     }
   }
 
+  // Re-read millis() rather than reuse the `now` captured at the top: a
+  // sentence parsed during the packet-processing loop above just set
+  // s_lastNavUpdateMs to a slightly LATER value than that stale `now`,
+  // which would underflow this unsigned subtraction into a huge number and
+  // trip the watchdog immediately after a perfectly good update.
+  now = millis();
   if (s_navValid && (now - s_lastNavUpdateMs > s_watchdogTimeoutMs)) {
     s_navValid = false;
     appLog("OpenCPN autopilot bridge: watchdog timeout, holding last heading");
