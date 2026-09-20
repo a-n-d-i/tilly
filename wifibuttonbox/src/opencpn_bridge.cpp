@@ -16,7 +16,12 @@ extern int desired_heading;
 // sendCustomEvent() also lives in wifibuttonbox.ino - reused here so
 // heading changes from OpenCPN show up in the log the same way the
 // button-driven ones do.
-extern void sendCustomEvent(const char* text, uint8_t severity);// ---------------------------------------------------------------------------
+extern void sendCustomEvent(const char* text, uint8_t severity);
+
+// True only while NMEA mode is active (Auto+Standby combo) - APB sentences
+// are always parsed/logged below, but only steer the boat while this is true.
+extern bool nmeaModeActive();
+// ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------
 static WiFiUDP s_udpIn;
@@ -206,7 +211,7 @@ void opencpnBridge_update() {
     appLog("OpenCPN autopilot bridge: watchdog timeout, holding last heading");
   }
 
-  if (s_navValid) {
+  if (s_navValid && nmeaModeActive()) {
     int newHeading = (int)roundf(computeSteerToHeading());
     if (newHeading > 359) newHeading -= 360;
     if (newHeading < 0) newHeading += 360;

@@ -55,6 +55,9 @@ const unsigned long displayUpdateInterval = 500;
 unsigned long lastMavlinkUpdate = 0;
 const unsigned long mavlinkUpdateInterval = 1000;
 
+unsigned long lastHeartbeatMs = 0;
+const unsigned long heartbeatIntervalMs = 1000;  // standard 1 Hz GCS heartbeat
+
 /* 
  *  In the RC world steering is value of
  *  1000-2000 with 1500 being midhsip. 
@@ -73,15 +76,24 @@ unsigned int standby_ram_position = 1500;
 int current_heading = 0;
 int desired_heading = 0;
 
-enum pilotModeType {STANDBY, AUTO};
+// NMEA: GUIDED steering like AUTO, but desired_heading is driven by the
+// OpenCPN APB bridge instead of the +1/+10/-1/-10 buttons. Entered/left via
+// the Auto+Standby combo (see kNmeaToggleComboMask) instead of a dedicated
+// button, since there are only 6.
+enum pilotModeType {STANDBY, AUTO, NMEA};
 
 pilotModeType pilotMode = STANDBY;
+
+// True only while NMEA mode is actually active - opencpn_bridge.cpp checks
+// this before applying an APB-derived heading, so APB sentences are still
+// parsed/logged but don't steer anything unless NMEA mode is on.
+bool nmeaModeActive() { return pilotMode == NMEA; }
 
 // pilotMode/the display only flip once ArduPilot's COMMAND_ACK confirms the
 // mode change - entering GUIDED requires a good EKF position estimate
 // whenever the vehicle is already armed (see Rover's Mode::enter()), so a
 // mode request can be silently rejected and we don't want to lie about it.
-enum class PendingModeCmd { NONE, GUIDED, MANUAL };
+enum class PendingModeCmd { NONE, GUIDED_AUTO, GUIDED_NMEA, MANUAL };
 PendingModeCmd pendingModeCmd = PendingModeCmd::NONE;
 uint32_t pendingModeCmdSentMs = 0;
 const uint32_t commandAckTimeoutMs = 2000;
@@ -219,6 +231,9 @@ void setup() {
     #endif
   }
 
+  sendHeartbeat();
+  lastHeartbeatMs = millis();
+
   requestMessageStream(MAVLINK_MSG_ID_GLOBAL_POSITION_INT);
   requestMessageStream(MAVLINK_MSG_ID_GPS_RAW_INT);
   requestMessageStream(MAVLINK_MSG_ID_SYSTEM_TIME);
@@ -272,19 +287,53 @@ static void applyStep(int delta) {
 
 // Buttons 5+6 (-10 / +10) held together toggle the on-screen log view.
 static const uint8_t kLogScreenComboMask = (1 << 4) | (1 << 5);
+// Buttons 1+2 (Auto/Standby) held together toggle NMEA mode.
+static const uint8_t kNmeaToggleComboMask = (1 << 0) | (1 << 1);
+// AUTO mode only: 4+6 (+1/+10) held together = +100 deg, 3+5 (-1/-10) = -100 deg.
+static const uint8_t kPlus100ComboMask = (1 << 3) | (1 << 5);
+static const uint8_t kMinus100ComboMask = (1 << 2) | (1 << 4);
 
 void handleButtons(){
   buttonBox.update();
 
   ButtonBox::Event ev;
   while (buttonBox.popEvent(ev)) {
-    #ifdef TILLY_DISPLAY
-    if (ev.type == ButtonBox::EventType::ComboStart && ev.mask == kLogScreenComboMask) {
-      showLogScreen = !showLogScreen;
-      appLog(showLogScreen ? "Log screen on" : "Log screen off");
+    if (ev.type == ButtonBox::EventType::ComboStart) {
+      #ifdef TILLY_DISPLAY
+      if (ev.mask == kLogScreenComboMask) {
+        showLogScreen = !showLogScreen;
+        appLog(showLogScreen ? "Log screen on" : "Log screen off");
+        continue;
+      }
+      #endif
+
+      if (ev.mask == kNmeaToggleComboMask && pendingModeCmd == PendingModeCmd::NONE) {
+        if (pilotMode == NMEA) {
+          appLog("NMEA off: requesting MANUAL mode");
+          setManualMode();
+          pendingModeCmd = PendingModeCmd::MANUAL;
+        } else {
+          appLog("NMEA on: requesting GUIDED mode");
+          setGuidedMode();
+          sendArmCommand();
+          pendingModeCmd = PendingModeCmd::GUIDED_NMEA;
+        }
+        pendingModeCmdSentMs = millis();
+        continue;
+      }
+
+      if (ev.mask == kPlus100ComboMask && pilotMode == AUTO) {
+        applyStep(100);
+        continue;
+      }
+
+      if (ev.mask == kMinus100ComboMask && pilotMode == AUTO) {
+        applyStep(-100);
+        continue;
+      }
+
       continue;
     }
-    #endif
 
     if (ev.type != ButtonBox::EventType::Click) continue;
 
@@ -295,13 +344,13 @@ void handleButtons(){
           setGuidedMode();
           // TODO: don't do this every time?
           sendArmCommand();
-          pendingModeCmd = PendingModeCmd::GUIDED;
+          pendingModeCmd = PendingModeCmd::GUIDED_AUTO;
           pendingModeCmdSentMs = millis();
         }
         break;
 
       case 1 << 1:  // button 2: Standby
-        if (pilotMode == AUTO && pendingModeCmd == PendingModeCmd::NONE) {
+        if ((pilotMode == AUTO || pilotMode == NMEA) && pendingModeCmd == PendingModeCmd::NONE) {
           appLog("Standby: requesting MANUAL mode");
           setManualMode();
           pendingModeCmd = PendingModeCmd::MANUAL;
@@ -396,10 +445,14 @@ void loop() {
                 if (ack.target_system == 250) {
                   if (ack.command == MAV_CMD_DO_SET_MODE && pendingModeCmd != PendingModeCmd::NONE) {
                     if (ack.result == MAV_RESULT_ACCEPTED) {
-                      if (pendingModeCmd == PendingModeCmd::GUIDED) {
+                      if (pendingModeCmd == PendingModeCmd::GUIDED_AUTO) {
                         pilotMode = AUTO;
                         desired_heading = current_heading;
                         appLog("Auto: GUIDED mode confirmed");
+                      } else if (pendingModeCmd == PendingModeCmd::GUIDED_NMEA) {
+                        pilotMode = NMEA;
+                        desired_heading = current_heading;
+                        appLog("NMEA: GUIDED mode confirmed");
                       } else {
                         pilotMode = STANDBY;
                         standby_ram_position = 1500;
@@ -487,9 +540,14 @@ void loop() {
   }
 
   // GUIDED Mode needs updates at least every three seconds or it stops
-  if ((pilotMode == AUTO) && (millis() - lastMavlinkUpdate >  mavlinkUpdateInterval)) {
+  if ((pilotMode == AUTO || pilotMode == NMEA) && (millis() - lastMavlinkUpdate >  mavlinkUpdateInterval)) {
       sendYawCommandDeg(ArduPilotSerial, 1, 1, desired_heading);
       lastMavlinkUpdate = millis();
+  }
+
+  if (millis() - lastHeartbeatMs > heartbeatIntervalMs) {
+      sendHeartbeat();
+      lastHeartbeatMs = millis();
   }
 
   mavNmeaBridge_update();
@@ -503,6 +561,7 @@ void loop() {
       updateTillyLogScreen();
     } else {
       displayState.autoMode = (pilotMode == AUTO);
+      displayState.nmeaMode = (pilotMode == NMEA);
       displayState.desHeading = desired_heading;
       displayState.wifiOk = wifi;
       updateTillyDisplay(displayState);
@@ -513,17 +572,28 @@ void loop() {
 }
 
 
+// Announces this device on the MAVLink link, same sysid/compid (250/1) used
+// for every command we send. Without this the vehicle has no way to know a
+// GCS-like device is present on the link (relevant to GCS failsafe, and to
+// any other MAVLink-aware tool sniffing the same UART).
+void sendHeartbeat() {
+    mavlink_message_t msg;
+    mavlink_msg_heartbeat_pack(250, 1, &msg,
+        MAV_TYPE_GCS, MAV_AUTOPILOT_INVALID, 0, 0, MAV_STATE_ACTIVE);
+    sendMavlink(ArduPilotSerial, msg);
+}
+
 void sendArmCommand(){
 
     mavlink_message_t msg;
-  
+
     // Pack the MAVLink message directly
     mavlink_msg_command_long_pack(
         250,          // system ID
         1,       // component ID
         &msg,                   // message struct
         1,          // target system
-        1,       // target component
+        0,       // target component
         MAV_CMD_COMPONENT_ARM_DISARM,
             0, // confirmation
             1, // param1 (0 to indicate disarm)
@@ -556,8 +626,8 @@ void sendModeCommand(int modeNumber, int subMode){
         250,          // system ID
         1,       // component ID
         &msg,                   // message struct
-        1,          // target system
-        1,       // target component
+        0,          // target system
+        0,       // target component
         MAV_CMD_DO_SET_MODE,
             0, // confirmation
             MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, // param1 (0 to indicate disarm)

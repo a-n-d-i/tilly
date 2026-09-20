@@ -16,6 +16,7 @@ struct TillyDisplayState {
   bool armed = false;
   bool wifiOk = false;
   bool autoMode = false;
+  bool nmeaMode = false;  // GUIDED steering driven by the OpenCPN APB bridge
   float speedKn = 0.0f;
   int curHeading = 0;
   int desHeading = 0;
@@ -151,8 +152,9 @@ void updateTillyDisplay(const TillyDisplayState &s) {
   tillyU8g2->drawHLine(0, 44, DISP_W);
 
   // ----- Mode + speed -----
+  const char *modeStr = s.nmeaMode ? "NMEA" : (s.autoMode ? "AUTO" : "STANDBY");
   tillyU8g2->setFont(u8g2_font_helvB24_tr);
-  tillyU8g2->drawStr(10, 80, s.autoMode ? "AUTO" : "STANDBY");
+  tillyU8g2->drawStr(10, 80, modeStr);
 
   char speedBuf[16];
   snprintf(speedBuf, sizeof(speedBuf), "%.1f kn", s.speedKn);

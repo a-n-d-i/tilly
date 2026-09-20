@@ -8,9 +8,15 @@
 // desired_heading (extern, defined in wifibuttonbox.ino) - the same global
 // the +1/+10/-1/-10 buttons already drive in AUTO mode.
 //
+// APB sentences are always parsed and logged, but only applied to
+// desired_heading while NMEA mode is active (nmeaModeActive(), toggled by
+// the Auto+Standby button combo) - otherwise OpenCPN could silently steer
+// the boat any time it's connected, regardless of what the button box
+// thinks it's doing.
+//
 // Deliberately does NOT send MAVLink itself. It piggybacks on the existing
-// sendYawCommandDeg() call in loop() (gated on pilotMode == AUTO, firing
-// every mavlinkUpdateInterval) instead of adding a second sender on
+// sendYawCommandDeg() call in loop() (gated on pilotMode == AUTO || NMEA,
+// firing every mavlinkUpdateInterval) instead of adding a second sender on
 // ArduPilotSerial. Two independent senders racing to set yaw is the kind of
 // thing that causes rudder hunting - one source of truth is safer. If you'd
 // rather this send MAVLink directly, that's a small change - flagging the

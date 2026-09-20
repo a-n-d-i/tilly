@@ -84,7 +84,7 @@ static void sendToVehicle(const mavlink_message_t &msg) {
 static void requestTrackedParams() {
   for (size_t i = 0; i < NUM_TRACKED_PARAMS; i++) {
     mavlink_message_t msg;
-    mavlink_msg_param_request_read_pack(255, 0, &msg, 1, 1, TRACKED_PARAMS[i], -1);
+    mavlink_msg_param_request_read_pack(250, 1, &msg, 1, 1, TRACKED_PARAMS[i], -1);
     sendToVehicle(msg);
   }
 }
