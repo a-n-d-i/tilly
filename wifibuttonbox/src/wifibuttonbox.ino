@@ -10,11 +10,23 @@
  */
 
 #define TILLY_DISPLAY
+// Comment any of these out to compile that subsystem out entirely - handy
+// for isolating a bug to one of them (each is otherwise independent: they
+// only share ArduPilotSerial and, for web/opencpn, WiFi).
+#define TILLY_NMEA_BRIDGE
+#define TILLY_OPENCPN_BRIDGE
+#define TILLY_WEB_TELEMETRY
 
 #include "display.h"
+#ifdef TILLY_NMEA_BRIDGE
 #include "mavlink_nmea_bridge.h"
+#endif
+#ifdef TILLY_OPENCPN_BRIDGE
 #include "opencpn_bridge.h"
+#endif
+#ifdef TILLY_WEB_TELEMETRY
 #include "web_telemetry.h"
+#endif
 #include "board_pins.h"
 #include "ButtonBox.h"
 #include "applog.h"
@@ -218,14 +230,20 @@ void setup() {
     BOOT_LOG("WiFi connect timed out");
   }
 
+  #ifdef TILLY_NMEA_BRIDGE
   mavNmeaBridge_setup(ArduPilotSerial, udp, remoteIP, NMEA_UDP_PORT);
   #ifdef TILLY_DISPLAY
   updateTillyLogScreen();
   #endif
+  #endif
 
   if (wifi == true) {
+    #ifdef TILLY_OPENCPN_BRIDGE
     opencpnBridge_setup(OPENCPN_AP_UDP_PORT);
+    #endif
+    #ifdef TILLY_WEB_TELEMETRY
     webTelemetry_setup(ArduPilotSerial);
+    #endif
     #ifdef TILLY_DISPLAY
     updateTillyLogScreen();
     #endif
@@ -393,8 +411,6 @@ void loop() {
   while (ArduPilotSerial.available() > 0) {
         uint8_t c = ArduPilotSerial.read();
 
-        //Serial.println("Char received");
-
         // Add charactar to message and try to parse / loop on until it parses/is complete
         if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
           // send to UDP
@@ -524,8 +540,12 @@ void loop() {
           }
           #endif
           // update the nmea bridge
+          #ifdef TILLY_NMEA_BRIDGE
           handleMavMessage(msg);
+          #endif
+          #ifdef TILLY_WEB_TELEMETRY
           if (wifi == true) webTelemetry_handleMavMessage(msg);
+          #endif
           break;
 
         }
@@ -550,9 +570,15 @@ void loop() {
       lastHeartbeatMs = millis();
   }
 
+  #ifdef TILLY_NMEA_BRIDGE
   mavNmeaBridge_update();
+  #endif
+  #ifdef TILLY_OPENCPN_BRIDGE
   opencpnBridge_update();
+  #endif
+  #ifdef TILLY_WEB_TELEMETRY
   if (wifi == true) webTelemetry_update();
+  #endif
 
   #ifdef TILLY_DISPLAY
   if (millis() - lastDisplayUpdate > displayUpdateInterval) {
@@ -593,7 +619,7 @@ void sendArmCommand(){
         1,       // component ID
         &msg,                   // message struct
         1,          // target system
-        0,       // target component
+        1,       // target component
         MAV_CMD_COMPONENT_ARM_DISARM,
             0, // confirmation
             1, // param1 (0 to indicate disarm)
@@ -626,8 +652,8 @@ void sendModeCommand(int modeNumber, int subMode){
         250,          // system ID
         1,       // component ID
         &msg,                   // message struct
-        0,          // target system
-        0,       // target component
+        1,          // target system
+        1,       // target component
         MAV_CMD_DO_SET_MODE,
             0, // confirmation
             MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, // param1 (0 to indicate disarm)

@@ -24,4 +24,4 @@
 
 // ArduPilot MAVLink link (UART2), wired to the P1 expansion header.
 #define MAVLINK_RX_PIN 18
-#define MAVLINK_TX_PIN 3
+#define MAVLINK_TX_PIN 2
