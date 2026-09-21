@@ -110,6 +110,15 @@ PendingModeCmd pendingModeCmd = PendingModeCmd::NONE;
 uint32_t pendingModeCmdSentMs = 0;
 const uint32_t commandAckTimeoutMs = 2000;
 
+// While NMEA mode is active, the compass shouldn't fight the external
+// heading source, so COMPASS_USE is forced to 0 - saving whatever it was
+// beforehand so it can be put back on exit. If it was already 0 when NMEA
+// was activated, it's left alone on exit too (nothing to restore).
+enum class CompassUseSync { IDLE, AWAITING_READ };
+CompassUseSync compassUseSync = CompassUseSync::IDLE;
+float savedCompassUse = 1.0f;
+bool compassUseWasZero = false;
+
 #ifdef TILLY_DISPLAY
 TillyDisplayState displayState;
 bool showLogScreen = false;  // toggled by holding buttons 5+6 together
@@ -140,6 +149,18 @@ static bool sendMavlink(Stream &serial, const mavlink_message_t &msg) {
     return false;
   }
   return true;
+}
+
+static void requestParam(const char *name) {
+  mavlink_message_t msg;
+  mavlink_msg_param_request_read_pack(250, 1, &msg, 1, 1, name, -1);
+  sendMavlink(ArduPilotSerial, msg);
+}
+
+static void setParam(const char *name, float value, uint8_t type) {
+  mavlink_message_t msg;
+  mavlink_msg_param_set_pack(250, 1, &msg, 1, 1, name, value, type);
+  sendMavlink(ArduPilotSerial, msg);
 }
 
 // setup()-only: logs a line and immediately redraws the fullscreen log view,
@@ -469,10 +490,24 @@ void loop() {
                         pilotMode = NMEA;
                         desired_heading = current_heading;
                         appLog("NMEA: GUIDED mode confirmed");
+                        requestParam("COMPASS_USE");
+                        compassUseSync = CompassUseSync::AWAITING_READ;
                       } else {
+                        bool wasNmea = (pilotMode == NMEA);
                         pilotMode = STANDBY;
                         standby_ram_position = 1500;
                         appLog("Standby: MANUAL mode confirmed");
+                        if (wasNmea) {
+                          if (compassUseSync == CompassUseSync::IDLE) {
+                            if (!compassUseWasZero) {
+                              setParam("COMPASS_USE", savedCompassUse, MAV_PARAM_TYPE_INT8);
+                              appLog("NMEA off: COMPASS_USE restored to %.0f", savedCompassUse);
+                            }
+                          } else {
+                            appLog("NMEA off: COMPASS_USE read never completed, not touching it");
+                            compassUseSync = CompassUseSync::IDLE;
+                          }
+                        }
                       }
                     } else {
                       appLog("Mode change rejected: MAV_RESULT %u", ack.result);
@@ -485,6 +520,26 @@ void loop() {
                       appLog("Arm/disarm rejected: MAV_RESULT %u", ack.result);
                     }
                   }
+                }
+            }
+
+            if (msg.msgid == MAVLINK_MSG_ID_PARAM_VALUE && msg.sysid == 1 &&
+                compassUseSync == CompassUseSync::AWAITING_READ) {
+                mavlink_param_value_t pv;
+                mavlink_msg_param_value_decode(&msg, &pv);
+                char paramName[17];
+                memcpy(paramName, pv.param_id, 16);
+                paramName[16] = '\0';
+                if (strcmp(paramName, "COMPASS_USE") == 0) {
+                  savedCompassUse = pv.param_value;
+                  compassUseWasZero = (pv.param_value == 0.0f);
+                  if (compassUseWasZero) {
+                    appLog("NMEA on: COMPASS_USE already 0, leaving it alone");
+                  } else {
+                    setParam("COMPASS_USE", 0.0f, MAV_PARAM_TYPE_INT8);
+                    appLog("NMEA on: COMPASS_USE saved (%.0f), set to 0", savedCompassUse);
+                  }
+                  compassUseSync = CompassUseSync::IDLE;
                 }
             }
 
@@ -526,6 +581,12 @@ void loop() {
             displayState.sats = gps_status.satellites_visible;
             if (gps_status.cog != UINT16_MAX) {
               displayState.cogDeg = gps_status.cog / 100.0f;
+            }
+            if (gps_status.eph != UINT16_MAX) {
+              displayState.hdop = gps_status.eph / 100.0f;
+            }
+            if (gps_status.epv != UINT16_MAX) {
+              displayState.vdop = gps_status.epv / 100.0f;
             }
             #endif
           }

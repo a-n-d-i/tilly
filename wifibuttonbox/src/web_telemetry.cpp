@@ -81,11 +81,15 @@ static void sendToVehicle(const mavlink_message_t &msg) {
   }
 }
 
+static void requestParam(const char *name) {
+  mavlink_message_t msg;
+  mavlink_msg_param_request_read_pack(250, 1, &msg, 1, 1, name, -1);
+  sendToVehicle(msg);
+}
+
 static void requestTrackedParams() {
   for (size_t i = 0; i < NUM_TRACKED_PARAMS; i++) {
-    mavlink_message_t msg;
-    mavlink_msg_param_request_read_pack(250, 1, &msg, 1, 1, TRACKED_PARAMS[i], -1);
-    sendToVehicle(msg);
+    requestParam(TRACKED_PARAMS[i]);
   }
 }
 
@@ -181,15 +185,49 @@ void webTelemetry_handleMavMessage(const mavlink_message_t &msg) {
 // WebSocket broadcast
 // ---------------------------------------------------------------------------
 
+// Writes a tuning parameter back to the vehicle. Only names on the
+// TRACKED_PARAMS whitelist are accepted - the dashboard's Signal Flow tab
+// also has two synthetic "scenario input" fields (err_yaw, speed) that
+// aren't real ArduPilot parameters, and this rejects anything else too.
+static void handleSetParam(JsonObjectConst msg) {
+  const char *name = msg["name"] | "";
+  if (trackedParamIndex(name) < 0) {
+    appLog("[web] rejected set_param for untracked param: %s", name);
+    return;
+  }
+  if (!msg["value"].is<float>()) {
+    appLog("[web] set_param %s missing/invalid value", name);
+    return;
+  }
+  float value = msg["value"];
+
+  mavlink_message_t setMsg;
+  mavlink_msg_param_set_pack(250, 1, &setMsg, 1, 1, name, value, MAV_PARAM_TYPE_REAL32);
+  sendToVehicle(setMsg);
+  appLog("[web] set %s = %.4f", name, value);
+
+  // Re-read right away instead of waiting for the next 5s poll, so the
+  // dashboard sees the vehicle's actual (possibly clamped) value quickly.
+  requestParam(name);
+}
+
 static void wsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
-  (void)payload;
-  (void)length;
   if (type == WStype_CONNECTED) {
     appLog("[web] client %u connected", num);
   } else if (type == WStype_DISCONNECTED) {
     appLog("[web] client %u disconnected", num);
+  } else if (type == WStype_TEXT) {
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, payload, length);
+    if (err) {
+      appLog("[web] bad JSON from client %u: %s", num, err.c_str());
+      return;
+    }
+    const char *msgType = doc["type"] | "";
+    if (strcmp(msgType, "set_param") == 0) {
+      handleSetParam(doc.as<JsonObjectConst>());
+    }
   }
-  // Dashboard is read-only, doesn't send anything - nothing else to handle.
 }
 
 static void broadcastTelemetry() {

@@ -118,7 +118,6 @@ button.reset-all:hover{border-color:var(--accent);}
 .live .lval{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:13px;}
 .live .lnote{font-weight:400; color:var(--muted); font-size:10.5px;}
 .src{font-size:10.5px; color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
-.arrow{display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:18px; margin:4px 0;}
 .notes{
   margin-top:28px; padding:16px 18px; background:var(--card); border:1px solid var(--line);
   border-radius:10px; font-size:13px; color:var(--sub); max-width:760px;
@@ -188,8 +187,6 @@ button.reset-all:hover{border-color:var(--accent);}
       <div class="src">Source: Rover/mode.cpp — Mode::calc_steering_to_heading()</div>
     </div>
 
-    <div class="arrow">↓</div>
-
     <div class="group-label">outer loop</div>
     <div class="stage teal">
       <h3>Steering angle P</h3>
@@ -200,8 +197,6 @@ button.reset-all:hover{border-color:var(--accent);}
       <div class="live">des_turn_rate = <span class="lval">{{ fmt(desiredRateAngle,1) }}°/s</span></div>
       <div class="src">Source: AR_AttitudeControl.cpp — AR_AttitudeControl::get_turn_rate_from_heading()</div>
     </div>
-
-    <div class="arrow">↓</div>
 
     <div class="group-label">rate ceiling</div>
     <div class="stage amber">
@@ -218,8 +213,6 @@ des_turn_rate = constrain(des_turn_rate, ±rate_limit)</div>
       <div class="src">Source: AR_AttitudeControl.cpp — get_turn_rate_from_heading()<br>AR_WPNav.cpp — turn-rate limit from TURN_RADIUS</div>
     </div>
 
-    <div class="arrow">↓</div>
-
     <div class="group-label">shaping</div>
     <div class="stage amber">
       <h3>Accel / decel slew limiter</h3>
@@ -233,8 +226,6 @@ des_turn_rate = slew_limit(des_turn_rate, prev, max_step)</div>
       <div class="desc">This stage is history-dependent (it limits how fast the demand can change between loop iterations), so no single settled output is shown — only the per-loop step size it allows.</div>
       <div class="src">Source: AR_AttitudeControl.cpp — AR_AttitudeControl::get_steering_out_rate()</div>
     </div>
-
-    <div class="arrow">↓</div>
 
     <div class="group-label">inner loop — filters</div>
     <div class="stage purple">
@@ -250,8 +241,6 @@ err_f = LPF(tgt_f - meas_f, FLTE)</div>
       <div class="desc">Filters need real time-series data to settle, so below we treat the vehicle as at rest and already settled (err_f ≈ des_turn_rate).</div>
       <div class="src">Source: libraries/AC_PID/AC_PID.cpp — AC_PID::update_all() (target/error filtering)</div>
     </div>
-
-    <div class="arrow">↓</div>
 
     <div class="group-label">inner loop — PID + FF</div>
     <div class="stage purple">
@@ -275,8 +264,6 @@ out = PD + I + FF</div>
       <div class="src">Source: libraries/AC_PID/AC_PID.cpp — AC_PID::update_all(), get_p()/get_i()/get_d()/get_ff()</div>
     </div>
 
-    <div class="arrow">↓</div>
-
     <div class="group-label">output shaping</div>
     <div class="stage amber">
       <h3>Slew limit &amp; clamp</h3>
@@ -289,8 +276,6 @@ steer_out = constrain(out, -1, 1)</div>
       <div class="live">steer_out (t≈0) = <span class="lval">{{ fmt(steerOut,3) }}</span><span class="lnote">SMAX=0 disables the slew limit</span></div>
       <div class="src">Source: libraries/AC_PID/AC_PID.cpp — slew limiter<br>AR_AttitudeControl.cpp — get_steering_out_rate() final clamp</div>
     </div>
-
-    <div class="arrow">↓</div>
 
     <div class="group-label">output</div>
     <div class="stage gray">
@@ -372,6 +357,11 @@ pwm_us = 1500 + (scaled / 4500) × 500  // servo endpoints ±500 from trim</div>
 <script>
 const { createApp, reactive, computed, ref, watch, onMounted, onBeforeUnmount } = Vue;
 
+// Shared WebSocket, module-scoped so ParamRow (a plain component defined
+// outside the app's setup(), no closure access to setup()-local variables)
+// can send parameter writes on the same connection telemetry arrives on.
+let ws = null;
+
 const COLORS = {
   yaw:'#1f77b4', heel:'#ff7f0e', speed:'#2ca02c',
   tar:'#1f77b4', act:'#ff7f0e',
@@ -405,6 +395,16 @@ const paramDefs = {
   ATC_STR_RAT_SMAX:  mk('ATC_STR_RAT_SMAX',    '1/s',   0,    200, 5,    0),
 };
 
+// err_yaw/speed are scenario inputs for the local "what would this compute
+// to" sandbox, not real ArduPilot parameters - never send those.
+const REAL_PARAMS = new Set(Object.keys(paramDefs).filter(k => k !== 'err_yaw' && k !== 'speed'));
+
+function sendParamSet(name, value){
+  if (!REAL_PARAMS.has(name)) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'set_param', name, value }));
+}
+
 const ParamRow = {
   props: ['p'],
   template: `
@@ -431,15 +431,19 @@ const ParamRow = {
       const d = this.decimals(this.p.step);
       return Math.round(v * Math.pow(10,d)) / Math.pow(10,d);
     },
+    commit(){
+      this.p.localEditAt = Date.now();
+      sendParamSet(this.p.label, this.p.value);
+    },
     clampNow(){
       let v = this.p.value;
       if (typeof v !== 'number' || isNaN(v)) v = this.p.def;
       v = Math.min(this.p.max, Math.max(this.p.min, v));
       this.p.value = this.round(v);
-      this.p.localEditAt = Date.now();
+      this.commit();
     },
-    inc(){ this.p.value = this.round(Math.min(this.p.max, (this.p.value||0) + this.p.step)); this.p.localEditAt = Date.now(); },
-    dec(){ this.p.value = this.round(Math.max(this.p.min, (this.p.value||0) - this.p.step)); this.p.localEditAt = Date.now(); }
+    inc(){ this.p.value = this.round(Math.min(this.p.max, (this.p.value||0) + this.p.step)); this.commit(); },
+    dec(){ this.p.value = this.round(Math.max(this.p.min, (this.p.value||0) - this.p.step)); this.commit(); }
   }
 };
 
@@ -552,7 +556,6 @@ createApp({
     const nowTick = ref(Date.now());
     let tickTimer = setInterval(() => { nowTick.value = Date.now(); }, 1000);
     const paramsAgeSec = computed(() => lastParamSync.value ? (nowTick.value - lastParamSync.value)/1000 : null);
-    let ws = null;
 
     const buf = { t:[], yaw:[], heel:[], spd:[], tar:[], act:[], err:[], rms:[], P:[], I:[], D:[], FF:[], rcout:[] };
     const track = []; // {x:east, y:north, t}, windowed the same as everything else

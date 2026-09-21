@@ -25,6 +25,8 @@ struct TillyDisplayState {
   uint64_t unixTimeSec = 0;        // from SYSTEM_TIME; 0 = not received yet
   float batteryVolts = -1.0f;      // from SYS_STATUS; -1 = not received yet
   float batteryAmps = -1.0f;       // from SYS_STATUS; -1 = not received yet / not measured
+  float hdop = -1.0f;              // from GPS_RAW_INT.eph; -1 = not received yet
+  float vdop = -1.0f;              // from GPS_RAW_INT.epv; -1 = not received yet
   float pidFF = 0, pidP = 0, pidI = 0, pidD = 0, pidSRate = 0;
 };
 
@@ -179,7 +181,13 @@ void updateTillyDisplay(const TillyDisplayState &s) {
 
   tillyU8g2->drawHLine(0, 136, DISP_W);
 
-  // ----- Current position, nautical D MM.mm' format, spread full width -----
+  // ----- Current position, nautical D MM.mm' format, + compass deviation -----
+  // No "LAT:"/"LON:" labels - the N/S vs E/W hemisphere letter already says
+  // which is which, standard nautical convention, and it buys room for DEV.
+  // "Deviation" here is the live gap between compass heading and GPS course
+  // over ground - drift/leeway/calibration error, not a fixed declination
+  // table value, since that needs no extra param round-trip and updates
+  // live like the rest of this screen.
   double latAbs = fabs(s.lat);
   int latDeg = (int)latAbs;
   double latMin = (latAbs - latDeg) * 60.0;
@@ -190,21 +198,26 @@ void updateTillyDisplay(const TillyDisplayState &s) {
   double lonMin = (lonAbs - lonDeg) * 60.0;
   char lonHemi = (s.lon >= 0) ? 'E' : 'W';
 
-  char latBuf[24], lonBuf[24];
-  snprintf(latBuf, sizeof(latBuf), "LAT: %02d %05.2f'%c", latDeg, latMin, latHemi);
-  snprintf(lonBuf, sizeof(lonBuf), "LON: %03d %05.2f'%c", lonDeg, lonMin, lonHemi);
+  float dev = s.curHeading - s.cogDeg;
+  while (dev > 180.0f) dev -= 360.0f;
+  while (dev < -180.0f) dev += 360.0f;
+
+  char latBuf[16], lonBuf[16], devBuf[16];
+  snprintf(latBuf, sizeof(latBuf), "%02d %05.2f'%c", latDeg, latMin, latHemi);
+  snprintf(lonBuf, sizeof(lonBuf), "%03d %05.2f'%c", lonDeg, lonMin, lonHemi);
+  snprintf(devBuf, sizeof(devBuf), "DEV %+.1f", dev);
+
   tillyU8g2->setFont(u8g2_font_helvB14_tr);
-  tillyU8g2->drawStr(10, 158, latBuf);
-  int lonW = tillyU8g2->getStrWidth(lonBuf);
-  tillyU8g2->drawStr(DISP_W - lonW - 10, 158, lonBuf);
+  int posX = 10;
+  tillyU8g2->drawStr(posX, 158, latBuf);
+  posX += tillyU8g2->getStrWidth(latBuf) + 20;
+  tillyU8g2->drawStr(posX, 158, lonBuf);
+  int devW = tillyU8g2->getStrWidth(devBuf);
+  tillyU8g2->drawStr(DISP_W - devW - 10, 158, devBuf);
 
   tillyU8g2->drawHLine(0, 168, DISP_W);
 
-  // ----- Battery volts/amps + compass deviation -----
-  // "Deviation" here is the live gap between compass heading and GPS course
-  // over ground - drift/leeway/calibration error, not a fixed declination
-  // table value, since that needs no extra param round-trip and updates
-  // live like the rest of this screen.
+  // ----- Battery volts/amps + GPS HDOP/VDOP -----
   bool haveTime = (s.unixTimeSec != 0);  // still needed below for sunrise/sunset
   time_t t = (time_t)s.unixTimeSec;
   struct tm tmVal;
@@ -219,16 +232,19 @@ void updateTillyDisplay(const TillyDisplayState &s) {
     snprintf(battBuf, sizeof(battBuf), "--V  --A");
   }
 
-  float dev = s.curHeading - s.cogDeg;
-  while (dev > 180.0f) dev -= 360.0f;
-  while (dev < -180.0f) dev += 360.0f;
-  char devBuf[16];
-  snprintf(devBuf, sizeof(devBuf), "DEV: %+.1f", dev);
+  char dopBuf[24];
+  if (s.hdop >= 0 && s.vdop >= 0) {
+    snprintf(dopBuf, sizeof(dopBuf), "HDOP %.1f  VDOP %.1f", s.hdop, s.vdop);
+  } else if (s.hdop >= 0) {
+    snprintf(dopBuf, sizeof(dopBuf), "HDOP %.1f", s.hdop);
+  } else {
+    snprintf(dopBuf, sizeof(dopBuf), "HDOP --  VDOP --");
+  }
 
   tillyU8g2->setFont(u8g2_font_helvB14_tr);
   tillyU8g2->drawStr(10, 190, battBuf);
-  int devW = tillyU8g2->getStrWidth(devBuf);
-  tillyU8g2->drawStr(DISP_W - devW - 10, 190, devBuf);
+  int dopW = tillyU8g2->getStrWidth(dopBuf);
+  tillyU8g2->drawStr(DISP_W - dopW - 10, 190, dopBuf);
 
   tillyU8g2->drawHLine(0, 200, DISP_W);
 

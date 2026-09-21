@@ -29,6 +29,7 @@ Connect Tilly to Buttonbox:
 
 Tilly Button
 Black White GND
+Red Brown + 
 Orange Green 
 yellow yellow
 
