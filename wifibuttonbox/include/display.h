@@ -165,15 +165,22 @@ void updateTillyDisplay(const TillyDisplayState &s) {
 
   tillyU8g2->drawHLine(0, 90, DISP_W);
 
-  // ----- Cur / des heading - label and value, same line, same size -----
-  char curBuf[8], desBuf[8];
-  snprintf(curBuf, sizeof(curBuf), "%d", s.curHeading);
-  snprintf(desBuf, sizeof(desBuf), "%d", s.desHeading);
+  // ----- True course / true heading / desired heading, same line -----
+  // TC: GPS course over ground (cogDeg, from GPS_RAW_INT.cog - always
+  // true-north referenced). TH suffix: heading in the true-north frame -
+  // used both for the vehicle's current heading (curHeading, from
+  // VFR_HUD.heading, ArduPilot's EKF yaw estimate) and for DES's target
+  // heading (desHeading), since both are true-referenced, not magnetic.
+  char tcBuf[16], thBuf[16], desBuf[16];
+  snprintf(tcBuf, sizeof(tcBuf), "%d TC", (int)lroundf(s.cogDeg));
+  snprintf(thBuf, sizeof(thBuf), "%d TH", s.curHeading);
+  snprintf(desBuf, sizeof(desBuf), "%d TH", s.desHeading);
 
-  tillyU8g2->setFont(u8g2_font_helvB24_tr);
-  tillyU8g2->drawStr(10, 126, "CUR:");
-  int curLabelW = tillyU8g2->getStrWidth("CUR:");
-  tillyU8g2->drawStr(10 + curLabelW + 10, 126, curBuf);
+  tillyU8g2->setFont(u8g2_font_helvB18_tr);
+  int hx2 = 10;
+  tillyU8g2->drawStr(hx2, 126, tcBuf);
+  hx2 += tillyU8g2->getStrWidth(tcBuf) + 15;
+  tillyU8g2->drawStr(hx2, 126, thBuf);
 
   tillyU8g2->drawStr(210, 126, "DES:");
   int desLabelW = tillyU8g2->getStrWidth("DES:");
