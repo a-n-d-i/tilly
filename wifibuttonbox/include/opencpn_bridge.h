@@ -51,8 +51,11 @@ void opencpnBridge_setup(uint16_t listenPort);
 // data arrives (wrapped to 0-359, same convention as handleButtons()).
 // Each change also fires a STATUSTEXT via sendCustomEvent(), same as the
 // button-driven heading changes, so it shows up in the ArduPilot log.
-// A watchdog stops updating desired_heading if nothing valid has arrived
-// recently - see opencpnBridge_setWatchdogTimeout().
+// A watchdog drops NMEA mode back to STANDBY if nothing valid has arrived
+// recently - see opencpnBridge_setWatchdogTimeout(). Without this, NMEA
+// mode would happily sit in GUIDED holding whatever heading it last had
+// (its entry heading, if no APB ever arrived at all) with no live nav data
+// behind it at all - actively "steering" with no input.
 void opencpnBridge_update();
 
 // Proportional XTE correction gain, used only when APB doesn't supply a
@@ -61,7 +64,15 @@ void opencpnBridge_update();
 // clamped to maxCorrectionDeg. Default: 20 deg/nm, clamped to 30 deg.
 void opencpnBridge_setXteGain(float degPerNm, float maxCorrectionDeg);
 
-// If no valid APB arrives within this many ms, stop updating
-// desired_heading (fail-safe - button box still works normally, boat just
-// holds last commanded heading). Default 5000 ms.
+// If no valid APB arrives within this many ms while NMEA mode is active,
+// fall back to STANDBY (same MANUAL-mode transition as pressing the
+// Standby button) and log an error - fail-safe against steering on stale
+// or absent nav data. Default 3000 ms.
 void opencpnBridge_setWatchdogTimeout(uint32_t timeoutMs);
+
+// Readable, display-friendly log of recent APB sentences (e.g. "Course 123
+// deg true, XTE 0.05nm R") - shown in place of the position/battery/sun
+// rows while NMEA mode is active (see display.h). Newest last, same
+// indexing convention as appLog()'s ring buffer.
+size_t opencpnBridge_apbLogCount();
+const char *opencpnBridge_apbLogLine(size_t index);

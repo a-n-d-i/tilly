@@ -5,6 +5,13 @@
 #include <time.h>
 #include <math.h>
 
+#ifdef TILLY_OPENCPN_BRIDGE
+// Readable APB feed (opencpn_bridge.cpp) - shown in place of the
+// position/battery/sun rows while NMEA mode is active, see below.
+extern size_t opencpnBridge_apbLogCount();
+extern const char *opencpnBridge_apbLogLine(size_t index);
+#endif
+
 // ----- SCREEN GEOMETRY (landscape, after U8G2_R1 rotation) -----
 static const int DISP_W = RLCD_WIDTH;   // 400
 static const int DISP_H = RLCD_HEIGHT;  // 300
@@ -188,6 +195,34 @@ void updateTillyDisplay(const TillyDisplayState &s) {
 
   tillyU8g2->drawHLine(0, 136, DISP_W);
 
+  #ifdef TILLY_OPENCPN_BRIDGE
+  if (s.nmeaMode) {
+    // ----- NMEA mode: live feed of incoming APB sentences, readable form -----
+    // Replaces the position/battery/sun rows below - they're not much use
+    // while steering is being driven by OpenCPN rather than GPS/compass
+    // browsing, and this is the more actionable thing to see: is APB
+    // actually still arriving, and what is it asking for.
+    tillyU8g2->setFont(u8g2_font_6x12_tr);
+    const int lineH = 14;
+    const int top = 136 + 4 + 10;
+    const int maxLines = (232 - (136 + 4)) / lineH;
+
+    size_t total = opencpnBridge_apbLogCount();
+    size_t shown = (total < (size_t)maxLines) ? total : (size_t)maxLines;
+    size_t startIdx = total - shown;
+
+    if (shown == 0) {
+      tillyU8g2->drawStr(10, top, "Waiting for APB...");
+    } else {
+      int y = top;
+      for (size_t i = 0; i < shown; i++) {
+        tillyU8g2->drawStr(10, y, opencpnBridge_apbLogLine(startIdx + i));
+        y += lineH;
+      }
+    }
+  } else
+  #endif
+  {
   // ----- Current position, nautical D MM.mm' format, + compass deviation -----
   // No "LAT:"/"LON:" labels - the N/S vs E/W hemisphere letter already says
   // which is which, standard nautical convention, and it buys room for DEV.
@@ -301,6 +336,7 @@ void updateTillyDisplay(const TillyDisplayState &s) {
   tillyU8g2->drawStr(10, 222, sunBuf);
   int moonW = tillyU8g2->getStrWidth(moonBuf);
   tillyU8g2->drawStr(DISP_W - moonW - 10, 222, moonBuf);
+  }
 
   tillyU8g2->drawHLine(0, 232, DISP_W);
 

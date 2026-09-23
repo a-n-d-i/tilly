@@ -21,6 +21,11 @@ extern void sendCustomEvent(const char* text, uint8_t severity);
 // True only while NMEA mode is active (Auto+Standby combo) - APB sentences
 // are always parsed/logged below, but only steer the boat while this is true.
 extern bool nmeaModeActive();
+
+// Same MANUAL-mode transition as pressing the Standby button - lives in
+// wifibuttonbox.ino since it touches pendingModeCmd/pendingModeCmdSentMs.
+extern void requestNmeaWatchdogFallback();
+
 // ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------
@@ -31,16 +36,56 @@ static uint32_t s_lastBindAttemptMs = 0;
 static const uint32_t kBindRetryIntervalMs = 2000;
 
 static float s_xteGainDegPerNm = 20.0f;
-static float s_xteMaxCorrDeg   = 30.0f;
-static uint32_t s_watchdogTimeoutMs = 5000;
+static float s_xteMaxCorrDeg   = 5.0f;
+static uint32_t s_watchdogTimeoutMs = 3000;
 
 static bool     s_navValid          = false;
 static uint32_t s_lastNavUpdateMs   = 0;
 static float    s_xteNm             = 0.0f;
 static char     s_steerDir          = 'R';   // 'L' or 'R'
-static float    s_bearingToWpDeg    = 0.0f;  // true bearing, present pos -> waypoint
+static float    s_bearingToWpDeg    = 0.0f;  // APB field 11: bearing, present pos -> waypoint
+static float    s_bearingOriginToDestDeg = 0.0f; // APB field 8: bearing, origin -> destination (the intended track)
 static bool     s_haveDirectHeading = false;
 static float    s_directHeadingDeg  = 0.0f;  // APB field 13, if the source populates it
+
+// Set once the watchdog has already triggered a fallback, so it doesn't
+// re-send the MANUAL-mode request on every single loop() tick while the
+// COMMAND_ACK for that request is still pending (nmeaModeActive() stays
+// true - pilotMode only flips once the ack arrives). Cleared as soon as
+// NMEA mode isn't active any more (fallback completed, or it was never
+// entered in the first place).
+static bool s_watchdogFallbackTriggered = false;
+
+// ---------------------------------------------------------------------------
+// On-screen APB feed - readable log of recent sentences, shown in place of
+// the position/battery/sun rows while NMEA mode is active (see display.h).
+// Kept separate from appLog()'s ring buffer: that one logs a terser,
+// technical line for the full debug view, this one is phrased for the
+// small live-feed area on the main telemetry screen.
+// ---------------------------------------------------------------------------
+#define APB_LOG_CAPACITY 8
+#define APB_LOG_LINE_LEN 56
+static char s_apbLog[APB_LOG_CAPACITY][APB_LOG_LINE_LEN];
+static size_t s_apbLogCount = 0;
+static size_t s_apbLogHead = 0;
+
+// Timestamped the same way as appLog()'s ring buffer ("[millis] ..."), so
+// the on-screen feed reads consistently with the rest of the log output.
+static void apbLogPush(const char *line) {
+  snprintf(s_apbLog[s_apbLogHead], APB_LOG_LINE_LEN, "[%lu] %s", millis(), line);
+  s_apbLogHead = (s_apbLogHead + 1) % APB_LOG_CAPACITY;
+  if (s_apbLogCount < APB_LOG_CAPACITY) s_apbLogCount++;
+}
+
+size_t opencpnBridge_apbLogCount() {
+  return s_apbLogCount;
+}
+
+const char *opencpnBridge_apbLogLine(size_t index) {
+  if (index >= s_apbLogCount) return "";
+  size_t oldest = (s_apbLogCount < APB_LOG_CAPACITY) ? 0 : s_apbLogHead;
+  return s_apbLog[(oldest + index) % APB_LOG_CAPACITY];
+}
 
 // ---------------------------------------------------------------------------
 // NMEA0183 parsing helpers
@@ -89,6 +134,10 @@ static void parseAPB(const String &body) {
   s_xteNm = f[3].toFloat();
   s_steerDir = f[4].length() ? f[4][0] : 'R';
   // f[5] is XTE units, normally "N" for nautical miles - assumed.
+
+  s_bearingOriginToDestDeg = f[8].toFloat(); // field 8: bearing, origin to destination (the intended track)
+  char originRef = (n >= 10 && f[9].length()) ? f[9][0] : '?'; // field 9: M/T for field 8
+
   s_bearingToWpDeg = f[11].toFloat(); // field 11: bearing, present pos to destination
   char bearingRef = (n >= 13 && f[12].length()) ? f[12][0] : '?'; // field 12: M/T for field 11
 
@@ -100,9 +149,30 @@ static void parseAPB(const String &body) {
     if (n >= 15 && f[14].length() > 0) headingRef = f[14][0]; // field 14: M/T for field 13
   }
 
-  float usedHeading = s_haveDirectHeading ? s_directHeadingDeg : s_bearingToWpDeg;
-  char usedRef = s_haveDirectHeading ? headingRef : bearingRef;  // 'T' true, 'M' magnetic
-  appLog("APB: hdg %.1f (%c) xte %.2fnm %c", usedHeading, usedRef, s_xteNm, s_steerDir);
+  // Log every heading APB actually supplied, not just the one currently fed
+  // to computeSteerToHeading() - the three can legitimately disagree (track
+  // bearing vs. direct bearing-to-waypoint vs. a source-computed steer-to
+  // heading), and seeing all of them is the only way to tell which one is
+  // driving the boat and whether that's the field it should be.
+  char readable[APB_LOG_LINE_LEN];
+  if (s_haveDirectHeading) {
+    appLog("APB: org->dst %.1f%c  pos->dst %.1f%c  steer %.1f%c  xte %.2fnm %c",
+           s_bearingOriginToDestDeg, originRef, s_bearingToWpDeg, bearingRef,
+           s_directHeadingDeg, headingRef, s_xteNm, s_steerDir);
+    snprintf(readable, sizeof(readable), "Steer %d%c  Org %d%c  Pos %d%c",
+             (int)lroundf(s_directHeadingDeg), headingRef,
+             (int)lroundf(s_bearingOriginToDestDeg), originRef,
+             (int)lroundf(s_bearingToWpDeg), bearingRef);
+  } else {
+    appLog("APB: org->dst %.1f%c  pos->dst %.1f%c  (no steer hdg)  xte %.2fnm %c",
+           s_bearingOriginToDestDeg, originRef, s_bearingToWpDeg, bearingRef,
+           s_xteNm, s_steerDir);
+    snprintf(readable, sizeof(readable), "Org %d%c  Pos %d%c  XTE %.2f%c",
+             (int)lroundf(s_bearingOriginToDestDeg), originRef,
+             (int)lroundf(s_bearingToWpDeg), bearingRef,
+             s_xteNm, s_steerDir);
+  }
+  apbLogPush(readable);
 
   s_navValid = true;
   s_lastNavUpdateMs = millis();
@@ -206,9 +276,19 @@ void opencpnBridge_update() {
   // which would underflow this unsigned subtraction into a huge number and
   // trip the watchdog immediately after a perfectly good update.
   now = millis();
-  if (s_navValid && (now - s_lastNavUpdateMs > s_watchdogTimeoutMs)) {
+  bool navStale = (now - s_lastNavUpdateMs > s_watchdogTimeoutMs);
+  if (s_navValid && navStale) {
     s_navValid = false;
-    appLog("OpenCPN autopilot bridge: watchdog timeout, holding last heading");
+  }
+
+  if (nmeaModeActive() && navStale) {
+    if (!s_watchdogFallbackTriggered) {
+      s_watchdogFallbackTriggered = true;
+      appLog("NMEA: no APB for %lus, falling back to STANDBY", (unsigned long)(s_watchdogTimeoutMs / 1000));
+      requestNmeaWatchdogFallback();
+    }
+  } else {
+    s_watchdogFallbackTriggered = false;
   }
 
   if (s_navValid && nmeaModeActive()) {

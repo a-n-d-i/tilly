@@ -693,7 +693,19 @@ void setGuidedMode() {
 
 void setManualMode() {
   sendModeCommand(0, 0);
-} 
+}
+
+// Called by opencpn_bridge.cpp's watchdog when NMEA mode has gone too long
+// without a valid APB sentence - same MANUAL-mode transition as pressing
+// the Standby button, so a boat left in NMEA mode with the OpenCPN link
+// down (or never connected) doesn't keep actively holding a heading with
+// no live nav data behind it.
+void requestNmeaWatchdogFallback() {
+  if (pendingModeCmd != PendingModeCmd::NONE) return;  // some other mode change already in flight
+  setManualMode();
+  pendingModeCmd = PendingModeCmd::MANUAL;
+  pendingModeCmdSentMs = millis();
+}
 
 
 void sendModeCommand(int modeNumber, int subMode){
