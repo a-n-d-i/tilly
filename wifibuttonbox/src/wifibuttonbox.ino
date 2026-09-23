@@ -39,11 +39,17 @@
 
 #include <ArduinoOTA.h>  // For enabling over the air updates
 #include <SPIFFS.h>
+#include <esp_system.h>  // esp_reset_reason() - freeze/reboot diagnostics
 
 // Include WiFi configuration from external file
 #include "config.h"
 
 WiFiUDP udp;
+
+// Arduino's auto-prototype generator doesn't reliably pick up functions
+// taking an esp_reset_reason_t parameter, so this one needs a manual
+// forward declaration (defined further down, near sendCustomEvent()).
+static const char *resetReasonStr(esp_reset_reason_t reason);
 
 // ===== Hardware Serial Configuration =====
 #define SERIAL_RX MAVLINK_RX_PIN
@@ -69,6 +75,9 @@ const unsigned long mavlinkUpdateInterval = 1000;
 
 unsigned long lastHeartbeatMs = 0;
 const unsigned long heartbeatIntervalMs = 1000;  // standard 1 Hz GCS heartbeat
+
+unsigned long lastHeapLogMs = 0;
+const unsigned long heapLogIntervalMs = 30000;  // watch for a downward trend ahead of a freeze
 
 /* 
  *  In the RC world steering is value of
@@ -194,6 +203,10 @@ void setup() {
   ArduPilotSerial.begin(115200, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
   BOOT_LOG("ArduPilot Serial initialized");
 
+  appLogSetMavSink(mavLogSink);
+  BOOT_LOG("Reset reason: %s", resetReasonStr(esp_reset_reason()));
+  BOOT_LOG("Free heap: %u bytes", (unsigned)ESP.getFreeHeap());
+
   buttonBox.begin();
   BOOT_LOG("Buttons initialized");
 
@@ -287,7 +300,36 @@ void sendCustomEvent(const char* text, uint8_t severity = MAV_SEVERITY_NOTICE) {
   sendMavlink(ArduPilotSerial, msg);
 }
 
+// Mirrors appLog() lines to the GCS as STATUSTEXT, prefixed so they're
+// recognizable among ArduPilot's own messages. Registered via
+// appLogSetMavSink() once ArduPilotSerial is up (see setup()).
+static void mavLogSink(const char *text) {
+  char buf[64];  // needs to stay >=50 bytes - mavlink_msg_statustext_pack()
+                 // always copies 50 bytes out of this buffer regardless of
+                 // the string's actual length
+  snprintf(buf, sizeof(buf), "Tilly: %s", text);
+  sendCustomEvent(buf);
+}
 
+// Human-readable reason for the last reset/boot - logged once at startup to
+// help tell a true freeze (no reset at all) apart from a silent watchdog
+// reboot that merely looks like a freeze because reconnecting takes a
+// couple of seconds.
+static const char *resetReasonStr(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON:   return "power-on";
+    case ESP_RST_EXT:       return "external pin";
+    case ESP_RST_SW:        return "software (restart)";
+    case ESP_RST_PANIC:     return "panic/exception";
+    case ESP_RST_INT_WDT:   return "interrupt watchdog";
+    case ESP_RST_TASK_WDT:  return "task watchdog";
+    case ESP_RST_WDT:       return "other watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep sleep wake";
+    case ESP_RST_BROWNOUT:  return "brownout";
+    case ESP_RST_SDIO:      return "SDIO";
+    default:                return "unknown";
+  }
+}
 
 // Applies a +/-1 or +/-10 step: to standby_ram_position in STANDBY, to
 // desired_heading in AUTO.
@@ -574,6 +616,11 @@ void loop() {
   if (millis() - lastHeartbeatMs > heartbeatIntervalMs) {
       sendHeartbeat();
       lastHeartbeatMs = millis();
+  }
+
+  if (millis() - lastHeapLogMs > heapLogIntervalMs) {
+      appLog("Free heap: %u bytes", (unsigned)ESP.getFreeHeap());
+      lastHeapLogMs = millis();
   }
 
   #ifdef TILLY_NMEA_BRIDGE

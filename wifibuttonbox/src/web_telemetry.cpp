@@ -213,9 +213,9 @@ static void handleSetParam(JsonObjectConst msg) {
 
 static void wsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
   if (type == WStype_CONNECTED) {
-    appLog("[web] client %u connected", num);
+    appLog("[web] client %u connected (%u total)", num, (unsigned)s_ws.connectedClients());
   } else if (type == WStype_DISCONNECTED) {
-    appLog("[web] client %u disconnected", num);
+    appLog("[web] client %u disconnected (%u total)", num, (unsigned)s_ws.connectedClients());
   } else if (type == WStype_TEXT) {
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload, length);
@@ -261,7 +261,19 @@ static void broadcastTelemetry() {
 
   String out;
   serializeJson(doc, out);
+
+  // broadcastTXT() writes to every connected client's TCP socket in turn.
+  // A client that's gone dark without a clean disconnect (out of WiFi
+  // range, phone locked) can leave lwIP blocking on that one write for a
+  // long time waiting for a TCP timeout - since this all runs on the main
+  // loop(), that stalls the display/buttons/everything else too. Flagging
+  // any broadcast that takes oddly long is meant to catch that in the act.
+  unsigned long t0 = millis();
   s_ws.broadcastTXT(out);
+  unsigned long dt = millis() - t0;
+  if (dt > 50) {
+    appLog("[web] broadcastTXT took %lu ms (%u clients)", dt, (unsigned)s_ws.connectedClients());
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +294,14 @@ void webTelemetry_setup(HardwareSerial &mavSerial) {
 
   s_ws.begin();
   s_ws.onEvent(wsEvent);
+  // A client that drops off WiFi without a clean close still looks
+  // "connected" to the socket layer, so broadcastTelemetry() keeps trying
+  // to write to it - and blocking the shared main loop() for up to
+  // WEBSOCKETS_TCP_TIMEOUT (see platformio.ini) - on every single 100ms
+  // tick until something else notices. Heartbeat pings it every 5s and
+  // force-disconnects after 2 missed pongs, so the dead client is dropped
+  // (and stops being retried) instead of stalling the board indefinitely.
+  s_ws.enableHeartbeat(5000, 2000, 2);
   appLog("[web] telemetry WebSocket on port %u", WS_PORT);
 
   setGcsPidMask();
@@ -290,8 +310,15 @@ void webTelemetry_setup(HardwareSerial &mavSerial) {
 }
 
 void webTelemetry_update() {
+  unsigned long t0 = millis();
   s_http.handleClient();
+  unsigned long dt = millis() - t0;
+  if (dt > 50) appLog("[web] handleClient took %lu ms", dt);
+
+  t0 = millis();
   s_ws.loop();
+  dt = millis() - t0;
+  if (dt > 50) appLog("[web] ws.loop took %lu ms", dt);
 
   unsigned long now = millis();
 

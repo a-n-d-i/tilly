@@ -5,6 +5,16 @@ static char s_lines[APPLOG_CAPACITY][APPLOG_LINE_LEN];
 static size_t s_count = 0;  // number of valid lines (<= APPLOG_CAPACITY)
 static size_t s_head = 0;   // slot the next line will be written to
 
+static AppLogMavSink s_mavSink = nullptr;
+// sendMavlink() (called from the sink) itself calls appLog() on a short
+// write - without this guard that would re-enter the sink and, if the link
+// stays jammed, keep doing so on every retry.
+static bool s_inMavSink = false;
+
+void appLogSetMavSink(AppLogMavSink sink) {
+  s_mavSink = sink;
+}
+
 void appLog(const char *fmt, ...) {
   char msg[APPLOG_LINE_LEN];
   va_list args;
@@ -19,6 +29,12 @@ void appLog(const char *fmt, ...) {
   if (s_count < APPLOG_CAPACITY) s_count++;
 
   Serial.println(line);
+
+  if (s_mavSink && !s_inMavSink) {
+    s_inMavSink = true;
+    s_mavSink(msg);  // un-timestamped - the GCS already timestamps STATUSTEXT on arrival
+    s_inMavSink = false;
+  }
 }
 
 size_t appLogCount() {
