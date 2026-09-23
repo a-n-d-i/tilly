@@ -9,8 +9,7 @@
 #include "web_telemetry.h"
 
 #include <SPIFFS.h>
-#include <WebServer.h>
-#include <WebSocketsServer.h>
+#include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include "applog.h"
 
@@ -20,8 +19,13 @@ static const uint32_t BROADCAST_INTERVAL_MS = 100;   // 10 Hz, matches the pytho
 static const uint32_t PARAM_POLL_INTERVAL_MS = 5000; // matches --param-poll default
 static const uint8_t GCS_PID_MASK_STEERING = 1;        // bit 0 = Rover steering axis
 
-static WebServer s_http(HTTP_PORT);
-static WebSocketsServer s_ws(WS_PORT);
+static AsyncWebServer s_http(HTTP_PORT);
+// A second server purely to host the WebSocket endpoint on its own port, so
+// the dashboard's ws://host:81/ URL doesn't need to change - AsyncWebSocket
+// has to be attached to an AsyncWebServer, but that server doesn't have to
+// be the same one serving the HTTP dashboard.
+static AsyncWebServer s_wsServer(WS_PORT);
+static AsyncWebSocket s_ws("/");
 static HardwareSerial *s_mavSerial = nullptr;
 
 // The 17 tuning parameters the dashboard's Signal Flow tab knows about -
@@ -211,16 +215,24 @@ static void handleSetParam(JsonObjectConst msg) {
   requestParam(name);
 }
 
-static void wsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
-  if (type == WStype_CONNECTED) {
-    appLog("[web] client %u connected (%u total)", num, (unsigned)s_ws.connectedClients());
-  } else if (type == WStype_DISCONNECTED) {
-    appLog("[web] client %u disconnected (%u total)", num, (unsigned)s_ws.connectedClients());
-  } else if (type == WStype_TEXT) {
+static void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
+                       void *arg, uint8_t *data, size_t len) {
+  if (type == WS_EVT_CONNECT) {
+    appLog("[web] client %u connected (%u total)", client->id(), (unsigned)server->count());
+  } else if (type == WS_EVT_DISCONNECT) {
+    appLog("[web] client %u disconnected (%u total)", client->id(), (unsigned)server->count());
+  } else if (type == WS_EVT_DATA) {
+    AwsFrameInfo *info = (AwsFrameInfo *)arg;
+    // Only handle single-frame, unfragmented text messages - the JSON
+    // control messages this dashboard sends are always tiny (well under
+    // one frame), so anything fragmented isn't a message we understand.
+    if (!(info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT)) {
+      return;
+    }
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, payload, length);
+    DeserializationError err = deserializeJson(doc, data, len);
     if (err) {
-      appLog("[web] bad JSON from client %u: %s", num, err.c_str());
+      appLog("[web] bad JSON from client %u: %s", client->id(), err.c_str());
       return;
     }
     const char *msgType = doc["type"] | "";
@@ -262,18 +274,12 @@ static void broadcastTelemetry() {
   String out;
   serializeJson(doc, out);
 
-  // broadcastTXT() writes to every connected client's TCP socket in turn.
-  // A client that's gone dark without a clean disconnect (out of WiFi
-  // range, phone locked) can leave lwIP blocking on that one write for a
-  // long time waiting for a TCP timeout - since this all runs on the main
-  // loop(), that stalls the display/buttons/everything else too. Flagging
-  // any broadcast that takes oddly long is meant to catch that in the act.
-  unsigned long t0 = millis();
-  s_ws.broadcastTXT(out);
-  unsigned long dt = millis() - t0;
-  if (dt > 50) {
-    appLog("[web] broadcastTXT took %lu ms (%u clients)", dt, (unsigned)s_ws.connectedClients());
-  }
+  // textAll() just queues the frame per-client via AsyncTCP's callback-
+  // driven I/O and returns immediately - unlike the old synchronous
+  // WebSocketsServer's broadcastTXT(), a client that's gone dark without a
+  // clean disconnect can no longer block this call (and therefore the
+  // whole main loop()) waiting on its TCP socket.
+  s_ws.textAll(out);
 }
 
 // ---------------------------------------------------------------------------
@@ -288,20 +294,21 @@ void webTelemetry_setup(HardwareSerial &mavSerial) {
     appLog("[web] SPIFFS mount failed - upload the filesystem image with `pio run -t uploadfs`");
   }
 
-  s_http.serveStatic("/", SPIFFS, "/index.html");
+  // Not serveStatic("/", SPIFFS, "/index.html") - ESPAsyncWebServer's
+  // AsyncStaticWebHandler treats a non-directory `path` as a mount prefix,
+  // not a single target file: a request for "/" resolves to
+  // "/index.html/" + default file ("index.htm" file by default), which
+  // doesn't exist, so canHandle() fails and every request 404s. Serving
+  // the one file directly sidesteps that path-resolution logic entirely.
+  s_http.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(SPIFFS, "/index.html", "text/html");
+  });
   s_http.begin();
   appLog("[web] HTTP dashboard on port %u", HTTP_PORT);
 
-  s_ws.begin();
-  s_ws.onEvent(wsEvent);
-  // A client that drops off WiFi without a clean close still looks
-  // "connected" to the socket layer, so broadcastTelemetry() keeps trying
-  // to write to it - and blocking the shared main loop() for up to
-  // WEBSOCKETS_TCP_TIMEOUT (see platformio.ini) - on every single 100ms
-  // tick until something else notices. Heartbeat pings it every 5s and
-  // force-disconnects after 2 missed pongs, so the dead client is dropped
-  // (and stops being retried) instead of stalling the board indefinitely.
-  s_ws.enableHeartbeat(5000, 2000, 2);
+  s_ws.onEvent(onWsEvent);
+  s_wsServer.addHandler(&s_ws);
+  s_wsServer.begin();
   appLog("[web] telemetry WebSocket on port %u", WS_PORT);
 
   setGcsPidMask();
@@ -310,15 +317,11 @@ void webTelemetry_setup(HardwareSerial &mavSerial) {
 }
 
 void webTelemetry_update() {
-  unsigned long t0 = millis();
-  s_http.handleClient();
-  unsigned long dt = millis() - t0;
-  if (dt > 50) appLog("[web] handleClient took %lu ms", dt);
-
-  t0 = millis();
-  s_ws.loop();
-  dt = millis() - t0;
-  if (dt > 50) appLog("[web] ws.loop took %lu ms", dt);
+  // No handleClient()/ws.loop() to call any more - ESPAsyncWebServer and
+  // AsyncTCP drive all socket I/O from their own task via lwIP callbacks,
+  // so there's nothing here that can block the main loop() the way the old
+  // synchronous WebServer + WebSocketsServer combination could.
+  s_ws.cleanupClients();
 
   unsigned long now = millis();
 
